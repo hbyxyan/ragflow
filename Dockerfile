@@ -14,15 +14,15 @@ RUN mkdir -p /ragflow/rag/res/deepdoc /root/.ragflow
 RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/huggingface.co,target=/huggingface.co \
     cp /huggingface.co/InfiniFlow/huqie/huqie.txt.trie /ragflow/rag/res/ && \
     tar --exclude='.*' -cf - \
-        /huggingface.co/InfiniFlow/text_concat_xgb_v1.0 \
-        /huggingface.co/InfiniFlow/deepdoc \
-        | tar -xf - --strip-components=3 -C /ragflow/rag/res/deepdoc 
+    /huggingface.co/InfiniFlow/text_concat_xgb_v1.0 \
+    /huggingface.co/InfiniFlow/deepdoc \
+    | tar -xf - --strip-components=3 -C /ragflow/rag/res/deepdoc 
 RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/huggingface.co,target=/huggingface.co \
     if [ "$LIGHTEN" != "1" ]; then \
-        (tar -cf - \
-            /huggingface.co/BAAI/bge-large-zh-v1.5 \
-            /huggingface.co/maidalun1020/bce-embedding-base_v1 \
-            | tar -xf - --strip-components=2 -C /root/.ragflow) \
+    (tar -cf - \
+    /huggingface.co/BAAI/bge-large-zh-v1.5 \
+    /huggingface.co/maidalun1020/bce-embedding-base_v1 \
+    | tar -xf - --strip-components=2 -C /root/.ragflow) \
     fi
 
 # https://github.com/chrismattmann/tika-python
@@ -44,8 +44,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Building C extensions: libpython3-dev libgtk-4-1 libnss3 xdg-utils libgbm-dev
 RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     if [ "$NEED_MIRROR" == "1" ]; then \
-        sed -i 's|http://ports.ubuntu.com|http://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list; \
-        sed -i 's|http://archive.ubuntu.com|http://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list; \
+    sed -i 's|http://ports.ubuntu.com|http://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list; \
+    sed -i 's|http://archive.ubuntu.com|http://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list; \
     fi; \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
     echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache && \
@@ -63,12 +63,12 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     apt install -y ghostscript
 
 RUN if [ "$NEED_MIRROR" == "1" ]; then \
-        pip3 config set global.index-url https://mirrors.aliyun.com/pypi/simple && \
-        pip3 config set global.trusted-host mirrors.aliyun.com; \
-        mkdir -p /etc/uv && \
-        echo "[[index]]" > /etc/uv/uv.toml && \
-        echo 'url = "https://mirrors.aliyun.com/pypi/simple"' >> /etc/uv/uv.toml && \
-        echo "default = true" >> /etc/uv/uv.toml; \
+    pip3 config set global.index-url https://mirrors.aliyun.com/pypi/simple && \
+    pip3 config set global.trusted-host mirrors.aliyun.com; \
+    mkdir -p /etc/uv && \
+    echo "[[index]]" > /etc/uv/uv.toml && \
+    echo 'url = "https://mirrors.aliyun.com/pypi/simple"' >> /etc/uv/uv.toml && \
+    echo "default = true" >> /etc/uv/uv.toml; \
     fi; \
     pipx install uv
 
@@ -86,11 +86,11 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
 # A modern version of cargo is needed for the latest version of the Rust compiler.
 RUN apt update && apt install -y curl build-essential \
     && if [ "$NEED_MIRROR" == "1" ]; then \
-         # Use TUNA mirrors for rustup/rust dist files
-         export RUSTUP_DIST_SERVER="https://mirrors.tuna.tsinghua.edu.cn/rustup"; \
-         export RUSTUP_UPDATE_ROOT="https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup"; \
-         echo "Using TUNA mirrors for Rustup."; \
-       fi; \
+    # Use TUNA mirrors for rustup/rust dist files
+    export RUSTUP_DIST_SERVER="https://mirrors.tuna.tsinghua.edu.cn/rustup"; \
+    export RUSTUP_UPDATE_ROOT="https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup"; \
+    echo "Using TUNA mirrors for Rustup."; \
+    fi; \
     # Force curl to use HTTP/1.1
     curl --proto '=https' --tlsv1.2 --http1.1 -sSf https://sh.rustup.rs | bash -s -- -y --profile minimal \
     && echo 'export PATH="/root/.cargo/bin:${PATH}"' >> /root/.bashrc
@@ -108,11 +108,11 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     apt update && \
     arch="$(uname -m)"; \
     if [ "$arch" = "arm64" ] || [ "$arch" = "aarch64" ]; then \
-        # ARM64 (macOS/Apple Silicon or Linux aarch64)
-        ACCEPT_EULA=Y apt install -y unixodbc-dev msodbcsql18; \
+    # ARM64 (macOS/Apple Silicon or Linux aarch64)
+    ACCEPT_EULA=Y apt install -y unixodbc-dev msodbcsql18; \
     else \
-        # x86_64 or others
-        ACCEPT_EULA=Y apt install -y unixodbc-dev msodbcsql17; \
+    # x86_64 or others
+    ACCEPT_EULA=Y apt install -y unixodbc-dev msodbcsql17; \
     fi || \
     { echo "Failed to install ODBC driver"; exit 1; }
 
@@ -132,9 +132,9 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/chromedriver-l
 # aspose-slides on linux/arm64 is unavailable
 RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps \
     if [ "$(uname -m)" = "x86_64" ]; then \
-        dpkg -i /deps/libssl1.1_1.1.1f-1ubuntu2_amd64.deb; \
+    dpkg -i /deps/libssl1.1_1.1.1f-1ubuntu2_amd64.deb; \
     elif [ "$(uname -m)" = "aarch64" ]; then \
-        dpkg -i /deps/libssl1.1_1.1.1f-1ubuntu2_arm64.deb; \
+    dpkg -i /deps/libssl1.1_1.1.1f-1ubuntu2_arm64.deb; \
     fi
 
 
@@ -151,14 +151,14 @@ COPY pyproject.toml uv.lock ./
 # uv records index url into uv.lock but doesn't failover among multiple indexes
 RUN --mount=type=cache,id=ragflow_uv,target=/root/.cache/uv,sharing=locked \
     if [ "$NEED_MIRROR" == "1" ]; then \
-        sed -i 's|pypi.org|mirrors.aliyun.com/pypi|g' uv.lock; \
+    sed -i 's|pypi.org|mirrors.aliyun.com/pypi|g' uv.lock; \
     else \
-        sed -i 's|mirrors.aliyun.com/pypi|pypi.org|g' uv.lock; \
+    sed -i 's|mirrors.aliyun.com/pypi|pypi.org|g' uv.lock; \
     fi; \
     if [ "$LIGHTEN" == "1" ]; then \
-        uv sync --python 3.10 --frozen; \
+    uv sync --python 3.10 --frozen; \
     else \
-        uv sync --python 3.10 --frozen --all-extras; \
+    uv sync --python 3.10 --frozen --all-extras; \
     fi
 
 COPY web web
@@ -170,9 +170,9 @@ COPY .git /ragflow/.git
 
 RUN version_info=$(git describe --tags --match=v* --first-parent --always); \
     if [ "$LIGHTEN" == "1" ]; then \
-        version_info="$version_info slim"; \
+    version_info="$version_info slim"; \
     else \
-        version_info="$version_info full"; \
+    version_info="$version_info full"; \
     fi; \
     echo "RAGFlow version: $version_info"; \
     echo $version_info > /ragflow/VERSION
@@ -182,7 +182,7 @@ FROM base AS production
 USER root
 
 WORKDIR /ragflow
-
+RUN uv pip install "markitdown[docx]"
 # Copy Python environment and packages
 ENV VIRTUAL_ENV=/ragflow/.venv
 COPY --from=builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
