@@ -1,24 +1,14 @@
 import os
-import jieba
-import jieba.analyse
+# import jieba # Retained for now due to __main__ check
+# import jieba.analyse # No longer needed for LLM keyword extraction
 import re
 import requests
 import json
-from datetime import datetime # New
-import tempfile # New
+from datetime import datetime
+import tempfile
 # from ragflow import RAGFlow
 
-# --- CHINESE_STOP_WORDS 和 extract_keywords 函数 ---
-CHINESE_STOP_WORDS = ["的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "而", "及", "与", "或", "个", "也", "为", "之", "此", "但", "则", "其", "更", "以", "所", "从", "自", "使", "向", "例如", "比如", "如何", "什么", "怎么", "为何", "哪些", "请问", "关于", "对于"]
-
-def extract_keywords(question_text, top_k=5):
-    if not question_text: return []
-    keywords = jieba.analyse.extract_tags(question_text, topK=top_k, withWeight=False, allowPOS=('n', 'nr', 'ns', 'nt', 'nz', 'v', 'vd', 'vn', 'eng'))
-    final_keywords = [kw for kw in keywords if kw.lower() not in CHINESE_STOP_WORDS and (len(kw) > 1 or re.match("^[a-zA-Z]+$", kw))]
-    if not final_keywords:
-        keywords_fallback = jieba.analyse.extract_tags(question_text, topK=top_k, withWeight=False)
-        final_keywords = [kw for kw in keywords_fallback if kw.lower() not in CHINESE_STOP_WORDS and (len(kw) > 1 or re.match("^[a-zA-Z]+$", kw))]
-    return final_keywords
+# CHINESE_STOP_WORDS = [...] # No longer needed for LLM keyword extraction
 
 # --- RAGFlow API 配置 ---
 RAGFLOW_API_KEY = "YOUR_RAGFLOW_API_KEY"
@@ -28,7 +18,7 @@ KB2_NAME = "既往问题分析总结库"
 
 # --- RAGFlow HTTP API Client ---
 class RAGFlowHttpApiClient:
-    def __init__(self, api_key, api_base_url, kb1_name=KB1_NAME, kb2_name=KB2_NAME): # Default args for kb_names
+    def __init__(self, api_key, api_base_url, kb1_name=KB1_NAME, kb2_name=KB2_NAME):
         self.api_key = api_key; self.api_base_url = api_base_url.rstrip('/'); self.kb1_name = kb1_name; self.kb2_name = kb2_name
         self.default_headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         self.kb1_id = None; self.kb2_id = None
@@ -53,7 +43,7 @@ class RAGFlowHttpApiClient:
         except requests.exceptions.RequestException as e:
             print(f"Request Exception: {e}"); return {"error": str(e), "status_code": None, "details": None}
 
-    def _get_dataset_id_by_name(self, dataset_name): # Simplified error check
+    def _get_dataset_id_by_name(self, dataset_name):
         print(f"Attempting to find dataset ID for: {dataset_name}")
         response = self._request("GET", "/api/v1/datasets", params={"name": dataset_name, "page_size": 5})
         if response and isinstance(response, dict) and response.get("code") == 0 and response.get("data", {}).get("items"):
@@ -68,36 +58,54 @@ class RAGFlowHttpApiClient:
         else: print(f"KB1 ('{self.kb1_name}') ID: {self.kb1_id}")
         if not self.kb2_id: print(f"关键错误: 无法获取KB2 '{self.kb2_name}' ID。")
         else: print(f"KB2 ('{self.kb2_name}') ID: {self.kb2_id}")
-        return self.kb1_id is not None and self.kb2_id is not None
+        return self.kb1_id is not None or self.kb2_id is not None # Return true if at least one ID is found
 
     def get_chat_assistant_for_dataset(self, dataset_id, assistant_name_prefix="AutoGen_"):
         if not dataset_id: print("Error: Dataset ID required for chat assistant."); return None
         assistant_name = f"{assistant_name_prefix}{dataset_id}"
+        print(f"  Attempting to get/create chat assistant '{assistant_name}' for dataset ID '{dataset_id}'...")
         response = self._request("GET", "/api/v1/chats", params={"name": assistant_name, "page_size": 1})
         if response and response.get("code") == 0 and response.get("data", {}).get("items"):
-            for assistant in response["data"]["items"]: # Check if list is not empty
-                if assistant.get("name") == assistant_name and dataset_id in assistant.get("dataset_ids", []):
-                    print(f"Found assistant '{assistant_name}' ID: {assistant['id']}"); return assistant["id"]
-        print(f"Assistant '{assistant_name}' not found. Creating..."); default_llm_model = os.getenv("RAGFLOW_DEFAULT_LLM_MODEL", "qwen-plus@Tongyi-Qianwen")
-        create_payload = {"name": assistant_name, "dataset_ids": [dataset_id], "llm": {"model_name": default_llm_model, "temperature":0.1, "top_p":0.3}, "prompt": {"similarity_threshold":0.2,"top_n":3,"show_quote":True}} # Added more default values
+            assistants = response["data"]["items"]
+            if assistants: # Check if list is not empty
+                assistant = assistants[0] # Assuming first one is the match if page_size=1 and name is unique
+                # Stricter check:
+                # for assistant_item in assistants:
+                # if assistant_item.get("name") == assistant_name and dataset_id in assistant_item.get("dataset_ids", []):
+                if assistant.get("name") == assistant_name: # Simplified check, assumes name is unique enough
+                    print(f"  Found existing assistant '{assistant_name}' with ID: {assistant['id']}")
+                    return assistant["id"]
+
+        print(f"  Assistant '{assistant_name}' not found or no exact match. Creating new one...")
+        default_llm_model = os.getenv("RAGFLOW_DEFAULT_LLM_MODEL", "qwen-plus@Tongyi-Qianwen")
+        create_payload = {"name": assistant_name, "dataset_ids": [dataset_id], "llm": {"model_name": default_llm_model, "temperature":0.1, "top_p":0.3}, "prompt": {"similarity_threshold":0.2,"top_n":3,"show_quote":True}}
         create_response = self._request("POST", "/api/v1/chats", json_data=create_payload)
         if create_response and create_response.get("code") == 0 and create_response.get("data", {}).get("id"):
-            new_assistant_id = create_response["data"]["id"]; print(f"Created assistant '{assistant_name}' ID: {new_assistant_id}"); return new_assistant_id
-        else: print(f"Error creating assistant '{assistant_name}': {create_response}"); return None
+            new_assistant_id = create_response["data"]["id"]; print(f"  Successfully created assistant '{assistant_name}' with ID: {new_assistant_id}"); return new_assistant_id
+        else: print(f"  Error creating assistant '{assistant_name}': {create_response}"); return None
 
     def chat_with_assistant(self, chat_assistant_id, question, session_id=None, stream=False):
         if not chat_assistant_id: print("Error: Chat Assistant ID required."); return {"error": "Chat Assistant ID required"}
         payload = {"question": question, "stream": stream};
         if session_id: payload["session_id"] = session_id
         response = self._request("POST", f"/api/v1/chats/{chat_assistant_id}/completions", json_data=payload)
-        if response and response.get("code") == 0 and response.get("data"): return response["data"]
-        else: error_detail = response.get('details', response.get('error')) if response else "API call failed"; print(f"Error during chat: {error_detail}"); return {"error": "Chat failed", "details": error_detail}
+        if response and response.get("code") == 0 and "data" in response: # Check for "data" key presence
+            return response["data"]
+        else:
+            error_detail = "Unknown error"
+            if response and ("error" in response or "details" in response):
+                 error_detail = response.get('details', response.get('error'))
+            elif response and "message" in response: # Some RAGFlow errors might use "message"
+                 error_detail = response.get("message")
+
+            print(f"Error during chat: {error_detail}");
+            return {"error": "Chat failed", "details": error_detail, "answer": None} # Ensure answer is None on error
 
     def upload_document(self, dataset_id, file_path, doc_name=None):
         if not dataset_id: print("Error: Dataset ID required."); return None; actual_doc_name = doc_name or os.path.basename(file_path)
         try:
-            with open(file_path, 'rb') as f: response_data = self._request("POST", f"/api/v1/datasets/{dataset_id}/documents", files={'file': (actual_doc_name, f, 'application/octet-stream')}, extra_headers={"Authorization": f"Bearer {self.api_key}"}) # Ensure correct content type for file
-            if response_data and response_data.get("code") == 0 and isinstance(response_data.get("data"), list): # Successful upload returns a list
+            with open(file_path, 'rb') as f: response_data = self._request("POST", f"/api/v1/datasets/{dataset_id}/documents", files={'file': (actual_doc_name, f, 'application/octet-stream')}, extra_headers={"Authorization": f"Bearer {self.api_key}"})
+            if response_data and response_data.get("code") == 0 and isinstance(response_data.get("data"), list):
                 print(f"Uploaded '{actual_doc_name}'. Response: {response_data['data']}"); return response_data["data"]
             else: print(f"Failed to upload '{actual_doc_name}'. Details: {response_data.get('details', response_data.get('error')) if response_data else 'No response'}"); return None
         except FileNotFoundError: print(f"Error: File not found: {file_path}"); return {"error": "File not found"}
@@ -109,13 +117,42 @@ class RAGFlowHttpApiClient:
         if response and response.get("code") == 0 and response.get("data", {}).get("chunks"): return response["data"]["chunks"]
         else: print(f"Error retrieving chunks: {response.get('details', response.get('error')) if response else 'API call failed'}"); return None
 
+# --- Keyword Extraction (LLM-based) ---
+def extract_keywords(client, question_text, top_k=5):
+    if not client: print("错误: RAGFlow客户端未提供，无法使用LLM提取关键词。"); return []
+    if not question_text: print("错误: 问题文本为空，无法提取关键词。"); return []
+    print(f"\n--- 开始使用LLM提取关键词 (问题: '{question_text[:50]}...') ---")
+    chat_id_for_keywords = None
+    if client.kb1_id:
+        chat_id_for_keywords = client.get_chat_assistant_for_dataset(client.kb1_id, assistant_name_prefix="KeywordExtractor_KB1_")
+    if not chat_id_for_keywords and client.kb2_id:
+        chat_id_for_keywords = client.get_chat_assistant_for_dataset(client.kb2_id, assistant_name_prefix="KeywordExtractor_KB2_")
+    if not chat_id_for_keywords: print("错误: 未能获取用于关键词提取的Chat Assistant ID。返回空列表。"); return []
+    prompt = (f"你是一个关键词提取助手。请从以下用户问题中提取不超过{top_k}个核心关键词。这些关键词将用于后续的知识库检索。"
+              f"请确保提取的关键词简洁明了，能准确反映问题的主要意图。\n"
+              f"返回格式要求：请直接返回提取的关键词，并用单个英文逗号 (,) 分隔。不要添加任何序号、解释或其他无关字符。\n"
+              f"用户问题：'{question_text}'")
+    print(f"  使用Chat Assistant (ID: {chat_id_for_keywords}) 和prompt提取关键词..."); # Prompt itself is too long for concise log
+    response_data = client.chat_with_assistant(chat_id_for_keywords, prompt)
+    if response_data and response_data.get("answer"):
+        llm_answer = response_data["answer"].strip(); print(f"  LLM返回的关键词字符串: '{llm_answer}'")
+        if ":" in llm_answer: llm_answer = llm_answer.split(":", 1)[-1].strip()
+        if "：" in llm_answer: llm_answer = llm_answer.split("：", 1)[-1].strip()
+        keywords = [kw.strip().replace("\"", "").replace("'", "").replace("“", "").replace("”", "") for kw in llm_answer.split(',') if kw.strip()]
+        cleaned_keywords = [kw for kw in keywords if kw]
+        if cleaned_keywords: print(f"  成功提取并解析的关键词: {cleaned_keywords}"); return cleaned_keywords[:top_k]
+        else: print("  LLM返回的内容无法解析出有效关键词。"); return []
+    else: print("  LLM未能成功提取关键词 (API调用可能失败或未返回答案)。"); return []
+
 # --- Knowledge Base Search & Analysis Logic ---
 def is_kb1_document_format(filename):
     if not filename or not filename.endswith(".docx"): return None
-    return re.match(r"^(?P<date>\d{8})发布_(?P<jira_key>[A-Z0-9-]+)_(?P<doc_name_part>.*)\.docx$", filename)
+    match = re.match(r"^(?P<date>\d{8})发布_(?P<jira_key>[A-Z0-9-]+)_(?P<doc_name_part>.*)\.docx$", filename)
+    return match # Return match object or None
 
 def search_knowledge_base_1(client, keywords, max_iterations=3):
     if not client or not client.kb1_id: print("Error: KB1 ID not initialized."); return []
+    if not keywords: print("KB1 Search: No keywords provided, skipping search."); return []
     print(f"\n--- Searching KB1 ({client.kb1_name}, ID: {client.kb1_id}) ---"); relevant_files_kb1 = []; processed_doc_names = set(); current_keywords = list(keywords)
     for iteration in range(max_iterations):
         if not current_keywords: print(f"Iter {iteration+1}: No keywords."); break
@@ -125,9 +162,11 @@ def search_knowledge_base_1(client, keywords, max_iterations=3):
             found_count = 0
             for chunk in chunks:
                 doc_name = chunk.get("document_name")
-                if doc_name and doc_name not in processed_doc_names and (match_info := is_kb1_document_format(doc_name)): # Python 3.8+ walrus operator
-                    processed_doc_names.add(doc_name); print(f"  Found valid doc: {doc_name}")
-                    relevant_files_kb1.append({"filename": doc_name, "date": match_info.group('date'), "jira_key": match_info.group('jira_key'), "doc_name_part": match_info.group('doc_name_part')}); found_count += 1 # Use .group()
+                if doc_name and doc_name not in processed_doc_names :
+                    match_info = is_kb1_document_format(doc_name) # Call is_kb1_document_format
+                    if match_info: # Check if match_info is not None
+                        processed_doc_names.add(doc_name); print(f"  Found valid doc: {doc_name}")
+                        relevant_files_kb1.append({"filename": doc_name, "date": match_info.group('date'), "jira_key": match_info.group('jira_key'), "doc_name_part": match_info.group('doc_name_part')}); found_count += 1
             print(f"  Added {found_count} new valid docs this iteration.")
         else: print("  API call failed or returned no chunks for KB1 search.")
         if len(relevant_files_kb1) >= 5: print("Found enough files, stopping early."); break
@@ -157,20 +196,23 @@ def analyze_kb1_documents(client, user_question, kb1_file_infos):
 
 def is_kb2_document_format(filename):
     if not filename or not filename.endswith(".md"): return None
-    return re.match(r"^(?P<date>\d{8})(?P<title>.*)\.md$", filename)
+    return re.match(r"^(?P<date>\d{8})(?P<title>.*)\.md$", filename) # Return match object
 
 def analyze_knowledge_base_2(client, keywords, user_question):
     if not client or not client.kb2_id: print("Error: KB2 ID not initialized."); return []
-    print(f"\n--- Analyzing KB2 ({client.kb2_name}, ID: {client.kb2_id}) ---"); kb2_analysis_results = []
+    if not keywords and not user_question: print("Error: No keywords or question for KB2 query."); return []
     query_string = " ".join(keywords) if keywords else user_question
-    if not query_string: print("Error: No query for KB2."); return []
+    print(f"\n--- Analyzing KB2 ({client.kb2_name}, ID: {client.kb2_id}) ---")
     print(f"  Querying KB2 with: '{query_string}'..."); chunks = client.retrieve_chunks(query_string, [client.kb2_id], top_k=10)
+    kb2_analysis_results = []
     if chunks:
         for chunk in chunks:
             doc_name = chunk.get("document_name")
-            if doc_name and (match_info := is_kb2_document_format(doc_name)): # Python 3.8+ walrus operator
-                print(f"    Found snippet from valid KB2 doc: {doc_name}")
-                kb2_analysis_results.append({"source_document_kb2": doc_name, "date": match_info.group('date'), "title": match_info.group('title'), "retrieved_snippet": chunk.get("content"), "highlight": chunk.get("highlighted_content"), "relevance_score": chunk.get("similarity"), "chunk_id": chunk.get("id", "N/A")})
+            if doc_name :
+                match_info = is_kb2_document_format(doc_name) # Call is_kb2_document_format
+                if match_info: # Check if match_info is not None
+                    print(f"    Found snippet from valid KB2 doc: {doc_name}")
+                    kb2_analysis_results.append({"source_document_kb2": doc_name, "date": match_info.group('date'), "title": match_info.group('title'), "retrieved_snippet": chunk.get("content"), "highlight": chunk.get("highlighted_content"), "relevance_score": chunk.get("similarity"), "chunk_id": chunk.get("id", "N/A")})
     else: print(f"  No snippets retrieved or API error for KB2 query.")
     print(f"--- KB2 analysis done. Collected {len(kb2_analysis_results)} snippets. ---"); return kb2_analysis_results
 
@@ -211,19 +253,19 @@ def generate_and_upload_report(client, user_question, kb1_results, kb2_results):
     print("\n--- Generated Report ---\n" + final_report_md + "\n--- End of Report ---\n")
     upload_status = {"success": False, "message": "Upload not attempted.", "filename": None}
     if not client or not client.kb2_id: upload_status["message"] = "Error: KB2 ID not init for upload."; print(upload_status["message"]); return final_report_md, upload_status
-    safe_title = re.sub(r'[^\w一-龥.-]', '_', report_title)[:50]; report_filename = f"{datetime.now().strftime('%Y%m%d')}_{safe_title}.md" # Added underscore for readability
+    safe_title = re.sub(r'[^\w一-龥().-]', '_', report_title)[:50]; report_filename = f"{datetime.now().strftime('%Y%m%d')}_{safe_title}.md" # Allow parentheses and dots in filename
     temp_file_path = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".md", encoding='utf-8') as tmp_file:
             tmp_file.write(final_report_md); temp_file_path = tmp_file.name
         print(f"  Report saved to temp file: {temp_file_path}. Uploading as '{report_filename}' to KB2 (ID: {client.kb2_id})...")
         upload_response = client.upload_document(client.kb2_id, temp_file_path, doc_name=report_filename)
-        if upload_response and isinstance(upload_response, list) and upload_response[0].get("id"): # Assuming success returns list with doc info
+        if upload_response and isinstance(upload_response, list) and upload_response[0].get("id"):
             upload_status.update({"success": True, "message": f"Report '{report_filename}' uploaded to KB2.", "filename": report_filename}); print(f"  {upload_status['message']}")
         else: upload_status["message"] = f"Upload failed. API Response: {upload_response}"; print(f"  {upload_status['message']}")
     except Exception as e: upload_status["message"] = f"Exception during temp file creation or upload: {e}"; print(f"  {upload_status['message']}")
     finally:
-        if temp_file_path and os.path.exists(temp_file_path): os.remove(temp_file_path); # print(f"  Temp file {temp_file_path} deleted.")
+        if temp_file_path and os.path.exists(temp_file_path): os.remove(temp_file_path);
     return final_report_md, upload_status
 
 # --- Client Initialization and Main Logic ---
@@ -233,27 +275,39 @@ def initialize_ragflow_client():
     if "YOUR_RAGFLOW_API_HOST" in temp_api_base or not temp_api_base: print("Warn: RAGFlow API Base URL not set or is placeholder.")
     RAGFLOW_API_KEY = temp_api_key; RAGFLOW_API_BASE = temp_api_base
     print(f"Init RAGFlow HTTP Client: Base={RAGFLOW_API_BASE}, Key=...{RAGFLOW_API_KEY[-4:] if len(RAGFLOW_API_KEY) > 4 else '****'}")
-    return RAGFlowHttpApiClient(api_key=RAGFLOW_API_KEY, api_base_url=RAGFLOW_API_BASE) # kb_names use class defaults
+    return RAGFlowHttpApiClient(api_key=RAGFLOW_API_KEY, api_base_url=RAGFLOW_API_BASE)
 
 def main():
     print("Agent starting..."); ragflow_client = initialize_ragflow_client()
     if not ragflow_client: print("Failed to init RAGFlow client, exiting."); return
     print("RAGFlow client created. Initializing dataset IDs...");
-    if not ragflow_client.initialize_dataset_ids(): print("Dataset ID initialization failed. API calls may fail or be skipped.") # Simplified this line
-    else: print(f"Dataset IDs initialized.") # Simplified
+    ragflow_client.initialize_dataset_ids() # Call it regardless, it prints errors if fails
     print("RAGFlow client ready.")
     test_question = "请问关于投保时生日输入错误的规则，以及如何处理JK005-54748这个需求？"
-    print(f"\nTest question: {test_question}"); keywords = extract_keywords(test_question, top_k=5)
-    print(f"Keywords: {keywords}"); retrieved_kb1_files = []; kb1_deep_analysis_results = []; kb2_analysis_results = [] # Init all result lists
+    print(f"\nTest question: {test_question}")
+
+    keywords = []
+    if ragflow_client: # Check if client is valid for keyword extraction
+        keywords = extract_keywords(ragflow_client, test_question, top_k=5)
+        print(f"LLM提取的关键词: {keywords}")
+    else:
+        print("RAGFlow client invalid, skipping LLM keyword extraction.")
+
+    retrieved_kb1_files = []; kb1_deep_analysis_results = []; kb2_analysis_results = []
     if ragflow_client and ragflow_client.kb1_id:
-        retrieved_kb1_files = search_knowledge_base_1(ragflow_client, keywords, max_iterations=3) # max_iterations restored
+        if keywords: retrieved_kb1_files = search_knowledge_base_1(ragflow_client, keywords, max_iterations=3)
+        else: print("\nSkipping KB1 search: No keywords from LLM.")
         if retrieved_kb1_files: kb1_deep_analysis_results = analyze_kb1_documents(ragflow_client, test_question, retrieved_kb1_files)
-        else: print("\nNo files retrieved from KB1 search, skipping deep analysis of KB1.")
+        elif keywords : print("\nNo files retrieved from KB1 search, skipping deep analysis of KB1.") # Only print if search was attempted
     else: print("\nSkipping KB1 search & analysis: Client or KB1 ID invalid.")
-    if ragflow_client and ragflow_client.kb2_id: kb2_analysis_results = analyze_knowledge_base_2(ragflow_client, keywords, test_question)
+
+    if ragflow_client and ragflow_client.kb2_id:
+        if keywords: kb2_analysis_results = analyze_knowledge_base_2(ragflow_client, keywords, test_question)
+        else: print("\nSkipping KB2 analysis: No keywords from LLM.")
     else: print("\nSkipping KB2 analysis: Client or KB2 ID invalid.")
+
     if ragflow_client:
-        if not kb1_deep_analysis_results and not kb2_analysis_results: print("\nNo relevant info from KBs, not generating report.")
+        if not kb1_deep_analysis_results and not kb2_analysis_results: print("\nNo relevant info from KBs (or keywords failed), not generating report.")
         else:
             final_report, upload_info = generate_and_upload_report(ragflow_client, test_question, kb1_deep_analysis_results, kb2_analysis_results)
             print(f"\nReport Upload Status: {upload_info['message']}");
@@ -262,6 +316,10 @@ def main():
     print("\nAgent execution finished.")
 
 if __name__ == "__main__":
-    try: jieba.lcut("Init jieba"); print("Jieba initialized.")
-    except Exception as e: print(f"Jieba init failed: {e}.")
+    try:
+        import jieba # Moved import here
+        jieba.lcut("Init jieba")
+        print("Jieba initialized (available for potential fallback or other uses).")
+    except ImportError: print(f"Jieba library not found.")
+    except Exception as e: print(f"Jieba init error: {e}.")
     main()
