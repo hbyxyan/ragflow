@@ -1,3 +1,19 @@
+"""示例脚本：构建一个能跨知识库检索并生成报告的简单智能体。
+
+本脚本展示如何使用 RAGFlow SDK 与 OpenAI API 协同工作，
+按照以下步骤执行：
+1. 从问题中提取关键词；
+2. 在知识库1中循环检索相关文档；
+3. 下载并将文档内容通过 ``markitdown`` 转为 Markdown，
+   让 LLM 结合问题进行分析；
+4. 在知识库2中检索既往总结并分析；
+5. 汇总所有分析结果生成 Markdown 报告，
+   最后将报告回传到知识库2。
+
+运行前请设置环境变量 ``RAGFLOW_API_KEY``、``KB1_ID``、``KB2_ID``
+及 ``OPENAI_API_KEY``。
+"""
+
 import os
 import time
 import re
