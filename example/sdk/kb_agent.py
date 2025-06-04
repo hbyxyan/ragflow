@@ -4,7 +4,7 @@
 按照以下步骤执行：
 1. 从问题中提取关键词；
 2. 在知识库1中循环检索相关文档；
-3. 下载并将文档内容通过 ``markitdown`` 转为 Markdown，
+3. 下载文档后使用 `MarkItDown` 转换为 Markdown，
    让 LLM 结合问题进行分析；
 4. 在知识库2中检索既往总结并分析；
 5. 汇总所有分析结果生成 Markdown 报告，
@@ -21,7 +21,8 @@ from typing import List, Tuple
 
 import openai
 from ragflow_sdk import RAGFlow
-from markitdown import markitdown
+from markitdown import MarkItDown
+import io
 
 
 # RAGFlow 服务地址，默认指向本地
@@ -79,13 +80,14 @@ def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str) -> Tuple[List[st
 
 def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str) -> str:
     """\
-    下载指定文档并使用 markitdown 转换为 Markdown
+    下载指定文档并使用 MarkItDown 转换为 Markdown
     """
     dataset = rag.list_datasets(id=dataset_id)[0]
     document = dataset.list_documents(id=doc_id)[0]
     content = document.download()
-    md = markitdown(content)
-    return md
+    md = MarkItDown()
+    result = md.convert_stream(io.BytesIO(content))
+    return result.markdown
 
 
 def analyze_document(question: str, md_text: str) -> str:
