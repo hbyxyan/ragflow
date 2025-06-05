@@ -23,7 +23,8 @@ import time
 import re
 import logging
 import asyncio
-from typing import List, Tuple
+import json
+from typing import List, Tuple, Dict
 
 from openai import AsyncOpenAI
 from ragflow_sdk import RAGFlow
@@ -93,6 +94,17 @@ def count_tokens(text: str) -> int:
     return len(encoding.encode(text))
 
 
+def parse_json_from_text(text: str) -> Dict[str, str]:
+    """从 LLM 回复中提取 JSON 对象并解析为字典"""
+    try:
+        start = text.index("{")
+        end = text.rindex("}") + 1
+        return json.loads(text[start:end])
+    except Exception as exc:
+        logging.error("JSON 解析失败: %s", exc)
+        return {}
+
+
 # ---------- 工具函数 ----------
 
 
@@ -153,18 +165,16 @@ def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str, fallback_na
     return result.markdown, name
 
 
-async def analyze_document(question: str, md_text: str) -> str:
+async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
     """\
     让 LLM 对 Markdown 文档进行分析并提取问题相关信息
     """
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
     prompt = (
-        "你是一名需求分析师，精炼、直接地回答以下问题，内容仅限于文档中提及的具体信息，切勿增加任何背景说明或通用解释。\n\n"
-        f"问题：“{question}”\n\n"
-        "请明确指出文档中是否存在与此问题直接相关的信息：\n"
-        "- 如果存在，逐条列出【需求背景】【需求目标】【需求方案】【测试要点】中涉及的内容。\n"
-        "- 如果不存在，请直接回答“无相关信息”。\n\n"
-        "文档内容：\n" + md_text
+        "你是一名需求分析师，精炼、直接地回答以下问题，并按照 JSON 结构返回结果。"
+        "若文档未提及某项，请将对应字段设为空字符串。示例：\n"
+        '{"需求背景":"","需求目标":"","需求方案":"","测试要点":""}'
+        "\n\n问题：" + question + "\n\n文档内容：\n" + md_text
     )
     tokens = count_tokens(prompt)
     # 根据输入 token 数量决定使用常规模型还是长上下文模型
@@ -182,12 +192,12 @@ async def analyze_document(question: str, md_text: str) -> str:
         )
     result = resp.choices[0].message.content
     logging.info("[LLM] 分析结果: %s", result)
-    return result
+    return parse_json_from_text(result)
 
 
 async def compose_report(
     question: str,
-    insights: List[str],
+    insights: List[Dict[str, str]],
     references: List[Tuple[str, str]],
 ) -> tuple[str, str]:
     """综合所有分析结果并生成 Markdown 报告"""
@@ -198,16 +208,14 @@ async def compose_report(
     for (doc_id, name), insight in zip(references, insights):
         if not insight:
             continue
-        clean = insight.strip()
-        if clean in (
-            "无相关信息",
-            "无相关信息。",
-            "无相关内容",
-            "无相关内容。",
-            "未查到相关信息",
-        ):
+        parts = []
+        for key in ("需求背景", "需求目标", "需求方案", "测试要点"):
+            val = insight.get(key, "").strip()
+            if val:
+                parts.append(f"【{key}】{val}")
+        if not parts:
             continue
-        context_lines.append(f"{idx}. {name}: {clean}")
+        context_lines.append(f"{idx}. {name}: " + " ".join(parts))
         doc_list.append((idx, name))
         idx += 1
 
