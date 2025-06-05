@@ -137,7 +137,7 @@ async def extract_keywords_from_insights(
         return []
     prompt = (
         f"你是需求分析助理，已提取的关键词有：{','.join(base_keywords)}。"
-        f"根据下面的文档分析结论和问题'{question}'，补充不超过{limit}个新的关键词，"
+        f"根据下面的文档分析结论和问题'{question}'，补充不超过{limit}个新的与问题解答可能相关的关键词，"
         "按重要性排序，用逗号分隔给出。\n文档分析结论：\n" + joined
     )
     await rate_limiter_long.wait()
@@ -157,7 +157,7 @@ async def extract_keywords_from_insights(
     return result
 
 
-def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.2) -> Tuple[List[str], List[str]]:
+def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.4) -> Tuple[List[str], List[str]]:
     """检索知识库并返回相关文档的 ID 与名称"""
 
     logging.info("在知识库 %s 中检索，查询: %s", dataset_id, question)
