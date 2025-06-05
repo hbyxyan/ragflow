@@ -108,11 +108,7 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     """使用长文本模型从问题中提取关键词"""
 
     logging.info("[LLM] 正在从问题中提取关键词: %s", question)
-    prompt = (
-        f"你是一个需求分析助理，从下面问题中精准提取不超过{limit}个核心关键词，"
-        "这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。关键词间用逗号分隔。\n"
-        "问题：" + question
-    )
+    prompt = f"你是一个需求分析助理，从下面问题中精准提取不超过{limit}个核心关键词，这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。关键词间用逗号分隔。\n问题：" + question
     await rate_limiter_long.wait()
     resp = await client_long.chat.completions.create(
         model=OPENAI_LONG_MODEL,
@@ -124,7 +120,6 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     keywords = [k for k in keywords if k][:limit]
     logging.info("[LLM] 解析后的关键词: %s", keywords)
     return keywords
-
 
 
 async def extract_keywords_from_insights(
@@ -162,9 +157,7 @@ async def extract_keywords_from_insights(
     return result
 
 
-def retrieve_docs(
-    rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.2
-) -> Tuple[List[str], List[str]]:
+def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.2) -> Tuple[List[str], List[str]]:
     """检索知识库并返回相关文档的 ID 与名称"""
 
     logging.info("在知识库 %s 中检索，查询: %s", dataset_id, question)
@@ -202,15 +195,28 @@ def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str, fallback_na
 
 
 async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
-    """\
-    让 LLM 对 Markdown 文档进行分析并提取问题相关信息
-    """
+    """分析单个 Markdown 文档并以结构化 JSON 返回结果"""
+
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
+    example = {
+        "需求背景": "",
+        "需求目标": "",
+        "需求方案": {
+            "触发方式": "",
+            "参与角色": "",
+            "处理流程": "",
+            "系统规则": "",
+            "字段与界面": "",
+            "通知与输出": "",
+        },
+        "测试要点": "",
+    }
     prompt = (
-        "你是一名需求分析师，精炼、直接地回答以下问题，内容仅限于文档中提及的具体信息，并按照 JSON 结构返回结果。"
-        "若文档未提及某项，请将对应字段设为空字符串。示例：\n"
-        '{"需求背景":"","需求目标":"","需求方案":"","测试要点":""}'
-        "\n\n问题：" + question + "\n\n文档内容：\n" + md_text
+        "你是一名资深需求分析师，专注于提取需求背景、需求目标、需求方案、测试要点这几个方面的关键内容。"
+        "请仔细分析下面的需求分析文档，针对问题'" + question + "'，精炼并逐项列出相关内容，"
+        "若文档未提及某项，请将对应字段设为空字符串。\n"
+        "请按照以下 JSON 结构回复：\n" + json.dumps(example, ensure_ascii=False) + "\n\n"
+        "文档内容：\n" + md_text
     )
     tokens = count_tokens(prompt)
     # 根据输入 token 数量决定使用常规模型还是长上下文模型
@@ -244,23 +250,30 @@ async def compose_report(
     for (doc_id, name), insight in zip(references, insights):
         if not insight:
             continue
-        parts = []
-        for key in ("需求背景", "需求目标", "需求方案", "测试要点"):
-            val = insight.get(key, "").strip()
-            if val:
-                parts.append(f"【{key}】{val}")
-        if not parts:
+
+        # 判断该分析是否包含有效内容
+        def has_value(obj: Dict) -> bool:
+            for v in obj.values():
+                if isinstance(v, dict):
+                    if has_value(v):
+                        return True
+                elif str(v).strip():
+                    return True
+            return False
+
+        if not has_value(insight):
             continue
-        context_lines.append(f"{idx}. {name}: " + " ".join(parts))
+
+        context_lines.append(f"{idx}. {name}: " + json.dumps(insight, ensure_ascii=False))
         doc_list.append((idx, name))
         idx += 1
 
     context = "\n".join(context_lines)
     doc_list_str = "\n".join(f"{i}. {name}" for i, name in doc_list)
     prompt = (
-        f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”给出精炼回答，"
-        "严格使用以下结构：\n【需求背景】\n【需求目标】\n【需求方案】\n【测试要点】。"
-        "若某项无信息，可留空。\n\n引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
+        f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”提供清晰、结构化的回答。"
+        "请按照以下格式输出：\n【需求背景】\n【需求目标】\n【需求方案】\n- **触发方式**：...\n- **参与角色**：...\n- **处理流程**：...\n- **系统规则**：...\n- **字段与界面**：...\n- **通知与输出**：...\n【测试要点】\n如无信息请说明“文档未提及”。\n\n"
+        "引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
         f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n不要提供未提及内容或一般概念解释，不做任何补充性建议。"
     )
 
