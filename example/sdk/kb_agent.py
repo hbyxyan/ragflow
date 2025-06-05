@@ -71,7 +71,7 @@ def extract_keywords(question: str, limit: int = 5) -> List[str]:
     返回:
         关键词列表
     """
-    logging.info("[LLM] extracting keywords from question: %s", question)
+logging.info("[LLM] 正在从问题中提取关键词: %s", question)
     prompt = (
         f"You are an assistant that extracts the {limit} most important keywords from the question.\n"
         f"Return the keywords separated by comma.\nQuestion: {question}"
@@ -81,10 +81,10 @@ def extract_keywords(question: str, limit: int = 5) -> List[str]:
         messages=[{"role": "user", "content": prompt}],
     )
     text = resp.choices[0].message.content
-    logging.info("[LLM] keyword extraction result: %s", text)
+    logging.info("[LLM] 关键词提取结果: %s", text)
     keywords = re.split(r"[,\s]+", text.strip())
     keywords = [k for k in keywords if k][:limit]
-    logging.info("[LLM] parsed keywords: %s", keywords)
+    logging.info("[LLM] 解析后的关键词: %s", keywords)
     return keywords
 
 
@@ -93,14 +93,14 @@ def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str) -> Tuple[List[st
     在指定知识库中检索问题相关的片段，
     并返回所有涉及的文档 ID 与名称
     """
-    logging.info("retrieving from dataset %s with query: %s", dataset_id, question)
+    logging.info("在知识库 %s 中检索，查询: %s", dataset_id, question)
     chunks = rag.retrieve(dataset_ids=[dataset_id], question=question)
     doc_ids, doc_names = [], []
     for c in chunks:
         if c.document_id not in doc_ids:
             doc_ids.append(c.document_id)
             doc_names.append(c.document_name)
-    logging.info("retrieved %d documents", len(doc_ids))
+    logging.info("共检索到 %d 个文档", len(doc_ids))
     return doc_ids, doc_names
 
 
@@ -108,14 +108,14 @@ def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str) -> str:
     """\
     下载指定文档并使用 MarkItDown 转换为 Markdown
     """
-    logging.info("downloading document %s from dataset %s", doc_id, dataset_id)
+    logging.info("正在从知识库 %s 下载文档 %s", dataset_id, doc_id)
     dataset = rag.list_datasets(id=dataset_id)[0]
     document = dataset.list_documents(id=doc_id)[0]
     content = document.download()
-    logging.info("converting document %s to markdown", doc_id)
+    logging.info("正在将文档 %s 转换为 Markdown", doc_id)
     md = MarkItDown()
     result = md.convert_stream(io.BytesIO(content))
-    logging.info("converted markdown length: %d", len(result.markdown))
+    logging.info("转换后的 Markdown 长度: %d", len(result.markdown))
     return result.markdown
 
 
@@ -123,19 +123,19 @@ def analyze_document(question: str, md_text: str) -> str:
     """\
     让 LLM 对 Markdown 文档进行分析并提取问题相关信息
     """
-    logging.info("[LLM] analyzing document, length %d", len(md_text))
+    logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
     prompt = (
         f"Given the question: '{question}', extract the relevant information from the following document in markdown.\n\n{md_text}\n"
     )
     tokens = count_tokens(prompt)
     model = OPENAI_LONG_MODEL if tokens > 90000 else OPENAI_MODEL
-    logging.info("[LLM] use model %s with %d tokens", model, tokens)
+    logging.info("[LLM] 选择模型 %s，输入 tokens %d 个", model, tokens)
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
     )
     result = resp.choices[0].message.content
-    logging.info("[LLM] analysis result: %s", result)
+    logging.info("[LLM] 分析结果: %s", result)
     return result
 
 
@@ -149,7 +149,7 @@ def compose_report(insights: List[str], kb2_insights: List[str], references: Lis
     report = (
         f"标题：自动化调研报告\n时间：{now}\n\n内容:\n{body}\n\n引用:\n" + "\n".join(ref_lines)
     )
-    logging.info("composed final report with %d references", len(references))
+    logging.info("生成最终报告，包含 %d 个引用", len(references))
     return report
 
 
@@ -161,19 +161,19 @@ def main(question: str):
     if not (RAGFLOW_API_KEY and KB1_ID and KB2_ID and OPENAI_API_KEY):
         raise RuntimeError("Required environment variables: RAGFLOW_API_KEY, KB1_ID, KB2_ID, OPENAI_API_KEY")
 
-    logging.info("question: %s", question)
+    logging.info("收到的问题: %s", question)
     # 初始化 RAGFlow 客户端并提取初始关键词
     rag = RAGFlow(api_key=RAGFLOW_API_KEY, base_url=RAGFLOW_HOST)
     keywords = extract_keywords(question)
 
     # Step2：在知识库1中循环检索
-    logging.info("start retrieving from KB1")
+    logging.info("开始在知识库1中检索")
     doc_ids, doc_names = [], []
     tried = set()
     for _ in range(5):
         q = ",".join(keywords)
         ids, names = retrieve_docs(rag, KB1_ID, q)
-        logging.info("iteration query: %s -> found %d docs", q, len(ids))
+        logging.info("检索关键词: %s -> 找到 %d 个文档", q, len(ids))
         new_refs = [(i, n) for i, n in zip(ids, names) if i not in tried]
         if not new_refs:
             break
@@ -182,19 +182,19 @@ def main(question: str):
             tried.add(i)
             doc_ids.append(i)
             doc_names.append(n)
-        logging.info("added %d new documents", len(new_refs))
+        logging.info("新增 %d 个文档", len(new_refs))
         if len(keywords) >= 10:
             break
         # 根据文档名再提取一些额外关键词，帮助下一轮检索
         extra = [word for name in names for word in re.findall(r"[\w]+", name)]
         keywords.extend(extra[: 10 - len(keywords)])
-        logging.info("expanded keywords: %s", keywords)
+        logging.info("扩展后的关键词: %s", keywords)
 
     insights = []
     references = []  # 记录所有引用的文档，便于生成报告
 
     for doc_id, doc_name in zip(doc_ids, doc_names):
-        logging.info("analyzing file %s", doc_name)
+        logging.info("分析文件 %s", doc_name)
         md = download_and_convert(rag, KB1_ID, doc_id)
         insight = analyze_document(question, md)
         insights.append(insight)
@@ -202,24 +202,24 @@ def main(question: str):
 
     # Step4：检索并分析知识库2的历史总结
     # 用同样的关键词在知识库2中检索既往总结
-    logging.info("searching KB2 for historical summaries")
+    logging.info("在知识库2中检索历史总结")
     kb2_doc_ids, kb2_doc_names = retrieve_docs(rag, KB2_ID, ",".join(keywords))
     kb2_insights = []
     for doc_id, doc_name in zip(kb2_doc_ids, kb2_doc_names):
-        logging.info("analyzing KB2 file %s", doc_name)
+        logging.info("分析知识库2文件 %s", doc_name)
         md = download_and_convert(rag, KB2_ID, doc_id)
         kb2_insight = analyze_document(question, md)
         kb2_insights.append(kb2_insight)
         references.append((doc_id, doc_name))
 
     report = compose_report(insights, kb2_insights, references)
-    logging.info("report composed, uploading to KB2")
+    logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
     filename = f"{int(time.time())}_report.md"
     dataset = rag.list_datasets(id=KB2_ID)[0]
     dataset.upload_documents([{"display_name": filename, "blob": report.encode("utf-8")}])
-    logging.info("uploaded report as %s", filename)
+    logging.info("已上传报告 %s", filename)
 
     # 控制台输出报告内容
     print(report)
