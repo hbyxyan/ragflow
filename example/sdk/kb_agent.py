@@ -75,9 +75,9 @@ def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str) -> Tuple[List[st
     chunks = rag.retrieve(dataset_ids=[dataset_id], question=question)
     doc_ids, doc_names = [], []
     for c in chunks:
-        if c.doc_id not in doc_ids:
-            doc_ids.append(c.doc_id)
-            doc_names.append(c.doc_name)
+        if c.document_id not in doc_ids:
+            doc_ids.append(c.document_id)
+            doc_names.append(c.document_name)
     return doc_ids, doc_names
 
 
