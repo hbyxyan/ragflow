@@ -194,11 +194,12 @@ def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str, fallback_na
         return "", fallback_name
 
 
-async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
+async def analyze_document(question: str, md_text: str, filename: str) -> Dict[str, str]:
     """分析单个 Markdown 文档并以结构化 JSON 返回结果"""
 
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
     example = {
+        "发布时间": "",
         "业务问题": "",
         "需求方案": {
             "触发方式": "",
@@ -208,10 +209,9 @@ async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
             "字段与界面": "",
             "通知与输出": "",
         },
-        "测试要点": "",
     }
     prompt = (
-        "你是一名资深需求分析师，专注于提取业务问题、需求方案和测试要点等关键内容。"
+        "你是一名资深需求分析师，专注于提取业务问题（即该需求要解决的业务问题）和需求方案等关键内容。"
         "请仔细分析下面的需求分析文档，针对问题'" + question + "'，精炼并逐项列出相关内容，"
         "若文档未提及某项，请将对应字段设为空字符串。\n"
         "请按照以下 JSON 结构回复：\n" + json.dumps(example, ensure_ascii=False) + "\n\n"
@@ -233,7 +233,14 @@ async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
     )
     result = resp.choices[0].message.content
     logging.info("[LLM] 分析结果: %s", result)
-    return parse_json_from_text(result)
+    data = parse_json_from_text(result)
+    # 从文件名中解析发布时间，如 20181108发布_JK005-1234_xxx.docx
+    m = re.search(r"(\d{8})", filename)
+    if m:
+        data.setdefault("发布时间", m.group(1))
+    else:
+        data.setdefault("发布时间", "")
+    return data
 
 
 async def compose_report(
@@ -281,9 +288,9 @@ async def compose_report(
         "- **系统规则**：...\n"
         "- **字段与界面**：...\n"
         "- **通知与输出**：...\n\n"
-        "【测试要点】\n...（如无内容请留空）\n\n"
         "请仅基于文档内容回答，若无信息请明确留空或说明未提及。\n"
         "引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
+        "若多个文档内容存在冲突，请以发布时间最近的为准，并在【其他说明】中说明冲突。\n\n"
         f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n"
         "不要提供未提及内容或一般概念解释，不做任何补充性建议."
     )
@@ -360,11 +367,11 @@ async def main(question: str):
 
         sem = asyncio.Semaphore(20)
 
-        async def sem_analyze(md: str):
+        async def sem_analyze(md: str, name: str):
             async with sem:
-                return await analyze_document(question, md)
+                return await analyze_document(question, md, name)
 
-        tasks = [sem_analyze(md) for _, _, md in documents]
+        tasks = [sem_analyze(md, name) for _, name, md in documents]
         results = await asyncio.gather(*tasks)
         insights.extend(results)
         references.extend([(doc_id, name) for doc_id, name, _ in documents])
