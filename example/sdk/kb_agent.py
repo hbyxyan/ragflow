@@ -232,7 +232,6 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
         max_tokens=max_tokens,
     )
     result = resp.choices[0].message.content
-    logging.info("[LLM] 分析结果: %s", result)
     data = parse_json_from_text(result)
     # 从文件名中解析发布时间，如 20181108发布_JK005-1234_xxx.docx
     m = re.search(r"(\d{8})", filename)
@@ -240,6 +239,7 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
         data["发布时间"] = m.group(1)
     else:
         data["发布时间"] = ""
+    logging.info("[LLM] 分析结果: %s", data)
     return data
 
 
