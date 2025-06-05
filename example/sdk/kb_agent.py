@@ -108,11 +108,7 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
         关键词列表
     """
     logging.info("[LLM] 正在从问题中提取关键词: %s", question)
-    prompt = (
-        "你是一个需求分析助理，从下面问题中精准提取不超过"
-        f"{limit}个核心关键词，这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。"
-        "关键词间用逗号分隔。\n问题：" + question
-    )
+    prompt = f"你是一个需求分析助理，从下面问题中精准提取不超过{limit}个核心关键词，这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。关键词间用逗号分隔。\n问题：" + question
     async with rate_limiter:
         resp = await client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -200,25 +196,28 @@ async def compose_report(
     doc_list: List[Tuple[int, str]] = []
     idx = 1
     for (doc_id, name), insight in zip(references, insights):
-        if not insight or any(word in insight for word in ["无相关信息", "未查到"]):
+        if not insight:
             continue
-        context_lines.append(f"{idx}. {name}: {insight}")
+        clean = insight.strip()
+        if clean in (
+            "无相关信息",
+            "无相关信息。",
+            "无相关内容",
+            "无相关内容。",
+            "未查到相关信息",
+        ):
+            continue
+        context_lines.append(f"{idx}. {name}: {clean}")
         doc_list.append((idx, name))
         idx += 1
 
     context = "\n".join(context_lines)
     doc_list_str = "\n".join(f"{i}. {name}" for i, name in doc_list)
     prompt = (
-        "你是一名需求分析师，请基于以下多个文档的具体内容，直接明确回答问题：“"
-        + question
-        + "”。仅使用【需求背景】【需求目标】【需求方案】【测试要点】进行结构化总结。\n\n"
+        "你是一名需求分析师，请基于以下多个文档的具体内容，直接明确回答问题：“" + question + "”。仅使用【需求背景】【需求目标】【需求方案】【测试要点】进行结构化总结。\n\n"
         "不分析或回答与问题无关的内容，也不要添加额外说明或标注。\n\n"
         "引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
-        "文档内容：\n"
-        + context
-        + "\n\n文档清单：\n"
-        + doc_list_str
-        + "\n\n不要提供未提及内容或一般概念解释，不做任何补充性建议。"
+        "文档内容：\n" + context + "\n\n文档清单：\n" + doc_list_str + "\n\n不要提供未提及内容或一般概念解释，不做任何补充性建议。"
     )
 
     tokens = count_tokens(prompt)
@@ -241,10 +240,7 @@ async def compose_report(
         )
     body = resp.choices[0].message.content.strip()
 
-    title_prompt = (
-        "请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n"
-        f"问题：“{question}”\n文档：“{body}”"
-    )
+    title_prompt = f"请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{body}”"
     async with limiter:
         resp = await cli.chat.completions.create(
             model=model,
@@ -306,7 +302,6 @@ async def main(question: str):
     tasks = [analyze_document(question, md) for _, _, md in documents]
     insights = await asyncio.gather(*tasks)
     references = [(doc_id, name) for doc_id, name, _ in documents]
-
 
     report, title = await compose_report(question, insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
