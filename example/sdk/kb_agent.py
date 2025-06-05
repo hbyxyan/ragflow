@@ -6,8 +6,7 @@
 2. 在知识库1中循环检索相关文档；
 3. 下载文档后使用 `MarkItDown` 转换为 Markdown，
    让 LLM 结合问题进行分析；
-4. 在知识库2中检索既往总结并分析；
-5. 汇总所有分析结果生成 Markdown 报告，
+4. 汇总所有分析结果生成 Markdown 报告，
    最后将报告回传到知识库2。
 
 运行前请设置环境变量 ``RAGFLOW_API_KEY``、``KB1_ID``、``KB2_ID``、
@@ -84,7 +83,11 @@ def extract_keywords(question: str, limit: int = 5) -> List[str]:
         关键词列表
     """
     logging.info("[LLM] 正在从问题中提取关键词: %s", question)
-    prompt = f"You are an assistant that extracts the {limit} most important keywords from the question.\nReturn the keywords separated by comma.\nQuestion: {question}"
+    prompt = (
+        "你是一个需求分析助理，从下面问题中精准提取不超过"
+        f"{limit}个核心关键词，这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。"
+        "关键词间用逗号分隔。\n问题：" + question
+    )
     resp = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
@@ -133,7 +136,12 @@ def analyze_document(question: str, md_text: str) -> str:
     让 LLM 对 Markdown 文档进行分析并提取问题相关信息
     """
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
-    prompt = f"你是一名需求分析师，请阅读以下文档并针对问题'{question}'提取关键信息和重要规则，要求回答精炼。如果文档中未提到相关内容，则回答\"无相关信息\"。\n\n" + md_text
+    prompt = (
+        "你是一名资深需求分析师，专注于提取需求背景、需求目标、需求方案、"
+        f"测试要点这几个方面的关键内容。请仔细分析下面的需求分析文档，针对问题'{question}'，"
+        "精炼并逐项列出相关内容，若文档未提及相关信息，请直接回答“无相关信息”。\n\n文档内容：\n"
+        + md_text
+    )
     tokens = count_tokens(prompt)
     # 根据输入 token 数量决定使用常规模型还是长上下文模型
     model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
@@ -154,7 +162,6 @@ def analyze_document(question: str, md_text: str) -> str:
 def compose_report(
     question: str,
     insights: List[str],
-    kb2_insights: List[str],
     references: List[Tuple[str, str]],
 ) -> tuple[str, str]:
     """综合所有分析结果并生成 Markdown 报告"""
@@ -162,7 +169,7 @@ def compose_report(
     context_lines: List[str] = []
     doc_list: List[Tuple[int, str]] = []
     idx = 1
-    for (doc_id, name), insight in zip(references, insights + kb2_insights):
+    for (doc_id, name), insight in zip(references, insights):
         if not insight or any(word in insight for word in ["无相关信息", "未查到"]):
             continue
         context_lines.append(f"{idx}. {name}: {insight}")
@@ -170,7 +177,12 @@ def compose_report(
         idx += 1
 
     context = "\n".join(context_lines)
-    prompt = "你是一名需求分析师，请根据下列文档内容整理回答，引用文档时使用[^编号]标注，编号对应文档清单。不要包含与问题无关的信息。\n问题：" + question + "\n" + context
+    prompt = (
+        "你是需求分析领域的专家，请基于以下文档内容，针对问题'"
+        + question
+        + "'，提供清晰、结构化的回答，建议以“需求背景”、“需求目标”、“需求方案”和“测试要点”为结构进行组织，并引用相应文档。若某项无信息，可跳过该项。引用文档时请使用 [^编号] 标注，编号对应文档清单。不要包含与问题无关的信息。\n\n文档内容：\n"
+        + context
+    )
 
     tokens = count_tokens(prompt)
     model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
@@ -252,19 +264,7 @@ def main(question: str):
         insights.append(insight)
         references.append((doc_id, real_name))
 
-    # Step4：检索并分析知识库2的历史总结
-    # 用同样的关键词在知识库2中检索既往总结
-    logging.info("在知识库2中检索历史总结")
-    kb2_doc_ids, kb2_doc_names = retrieve_docs(rag, KB2_ID, ",".join(keywords))
-    kb2_insights = []
-    for doc_id, doc_name in zip(kb2_doc_ids, kb2_doc_names):
-        logging.info("分析知识库2文件 %s", doc_name)
-        md, real_name = download_and_convert(rag, KB2_ID, doc_id, doc_name)
-        kb2_insight = analyze_document(question, md)
-        kb2_insights.append(kb2_insight)
-        references.append((doc_id, real_name))
-
-    report, title = compose_report(question, insights, kb2_insights, references)
+    report, title = compose_report(question, insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
