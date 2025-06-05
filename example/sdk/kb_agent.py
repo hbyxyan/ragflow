@@ -199,8 +199,7 @@ async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
 
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
     example = {
-        "需求背景": "",
-        "需求目标": "",
+        "业务问题": "",
         "需求方案": {
             "触发方式": "",
             "参与角色": "",
@@ -212,7 +211,7 @@ async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
         "测试要点": "",
     }
     prompt = (
-        "你是一名资深需求分析师，专注于提取需求背景、需求目标、需求方案、测试要点这几个方面的关键内容。"
+        "你是一名资深需求分析师，专注于提取业务问题、需求方案和测试要点等关键内容。"
         "请仔细分析下面的需求分析文档，针对问题'" + question + "'，精炼并逐项列出相关内容，"
         "若文档未提及某项，请将对应字段设为空字符串。\n"
         "请按照以下 JSON 结构回复：\n" + json.dumps(example, ensure_ascii=False) + "\n\n"
@@ -274,8 +273,7 @@ async def compose_report(
     prompt = (
         f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”提供清晰、结构化的总结，"
         "请使用以下格式撰写，内容应来自文档明细，不得虚构或扩展：\n\n"
-        "【需求背景】\n...（如无内容请留空）\n\n"
-        "【需求目标】\n...（如无内容请留空）\n\n"
+        "【业务问题】\n...（如无内容请留空）\n\n"
         "【需求方案】\n"
         "- **触发方式**：...\n"
         "- **参与角色**：...\n"
