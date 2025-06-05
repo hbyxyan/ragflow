@@ -157,7 +157,7 @@ async def extract_keywords_from_insights(
     return result
 
 
-def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.4) -> Tuple[List[str], List[str]]:
+def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.3) -> Tuple[List[str], List[str]]:
     """检索知识库并返回相关文档的 ID 与名称"""
 
     logging.info("在知识库 %s 中检索，查询: %s", dataset_id, question)
@@ -310,10 +310,7 @@ async def compose_report(
     )
     summary_md = resp.choices[0].message.content.strip()
 
-    title_prompt = (
-        "请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n"
-        f"问题：“{question}”\n文档：“{summary_md}”"
-    )
+    title_prompt = f"请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{summary_md}”"
     await limiter.wait()
     resp = await cli.chat.completions.create(
         model=model,
@@ -380,7 +377,7 @@ async def main(question: str):
             if extra:
                 keywords.extend(extra)
                 logging.info("扩展后的关键词: %s", keywords)
-        if not extra or len(keywords) >= 10:
+        if not extra:
             break
 
     report, title = await compose_report(question, insights, references)
