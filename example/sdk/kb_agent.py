@@ -22,9 +22,10 @@ import os
 import time
 import re
 import logging
+import asyncio
 from typing import List, Tuple
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 from ragflow_sdk import RAGFlow
 from markitdown import MarkItDown
 import io
@@ -56,11 +57,35 @@ OPENAI_LONG_MODEL = os.environ.get("OPENAI_LONG_MODEL", "Qwen/qwen-long-latest")
 OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS", "2048"))
 OPENAI_LONG_MAX_TOKENS = int(os.environ.get("OPENAI_LONG_MAX_TOKENS", "8192"))
 
-# 配置 OpenAI 客户端
-client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
-client_long = OpenAI(api_key=OPENAI_LONG_API_KEY, base_url=OPENAI_LONG_BASE_URL)
+# 配置 OpenAI 客户端（异步）
+client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+client_long = AsyncOpenAI(api_key=OPENAI_LONG_API_KEY, base_url=OPENAI_LONG_BASE_URL)
 
 encoding = tiktoken.get_encoding("cl100k_base")
+
+
+class RateLimiter:
+    """简单的异步限速器，用于控制请求间隔"""
+
+    def __init__(self, interval: float):
+        self.interval = interval
+        self.lock = asyncio.Lock()
+        self.last_call = 0.0
+
+    async def __aenter__(self):
+        await self.lock.acquire()
+        wait = self.interval - (time.time() - self.last_call)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.last_call = time.time()
+        self.lock.release()
+
+
+rate_limiter = RateLimiter(1.5)
+rate_limiter_long = RateLimiter(1.5)
 
 
 def count_tokens(text: str) -> int:
@@ -71,7 +96,7 @@ def count_tokens(text: str) -> int:
 # ---------- 工具函数 ----------
 
 
-def extract_keywords(question: str, limit: int = 5) -> List[str]:
+async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     """\
     使用 OpenAI 模型从问题中提取关键词
 
@@ -88,10 +113,11 @@ def extract_keywords(question: str, limit: int = 5) -> List[str]:
         f"{limit}个核心关键词，这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。"
         "关键词间用逗号分隔。\n问题：" + question
     )
-    resp = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    async with rate_limiter:
+        resp = await client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
     text = resp.choices[0].message.content
     logging.info("[LLM] 关键词提取结果: %s", text)
     keywords = re.split(r"[,\s]+", text.strip())
@@ -131,7 +157,7 @@ def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str, fallback_na
     return result.markdown, name
 
 
-def analyze_document(question: str, md_text: str) -> str:
+async def analyze_document(question: str, md_text: str) -> str:
     """\
     让 LLM 对 Markdown 文档进行分析并提取问题相关信息
     """
@@ -151,17 +177,19 @@ def analyze_document(question: str, md_text: str) -> str:
     max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
     logging.info("[LLM] 使用模型 %s，输入 %d tokens，回复上限 %d", model, tokens, max_tokens)
     cli = client_long if use_long else client
-    resp = cli.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-    )
+    limiter = rate_limiter_long if use_long else rate_limiter
+    async with limiter:
+        resp = await cli.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+        )
     result = resp.choices[0].message.content
     logging.info("[LLM] 分析结果: %s", result)
     return result
 
 
-def compose_report(
+async def compose_report(
     question: str,
     insights: List[str],
     references: List[Tuple[str, str]],
@@ -204,22 +232,25 @@ def compose_report(
         max_tokens,
     )
     cli = client_long if use_long else client
-    resp = cli.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-    )
+    limiter = rate_limiter_long if use_long else rate_limiter
+    async with limiter:
+        resp = await cli.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+        )
     body = resp.choices[0].message.content.strip()
 
     title_prompt = (
         "请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n"
         f"问题：“{question}”\n文档：“{body}”"
     )
-    resp = cli.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": title_prompt}],
-        max_tokens=64,
-    )
+    async with limiter:
+        resp = await cli.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": title_prompt}],
+            max_tokens=64,
+        )
     title = resp.choices[0].message.content.strip()
 
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -232,7 +263,7 @@ def compose_report(
 # ---------- 主流程 ----------
 
 
-def main(question: str):
+async def main(question: str):
     """根据输入问题生成调研报告"""
     if not (RAGFLOW_API_KEY and KB1_ID and KB2_ID and OPENAI_API_KEY):
         raise RuntimeError("Required environment variables: RAGFLOW_API_KEY, KB1_ID, KB2_ID, OPENAI_API_KEY")
@@ -240,7 +271,7 @@ def main(question: str):
     logging.info("收到的问题: %s", question)
     # 初始化 RAGFlow 客户端并提取初始关键词
     rag = RAGFlow(api_key=RAGFLOW_API_KEY, base_url=RAGFLOW_HOST)
-    keywords = extract_keywords(question)
+    keywords = await extract_keywords(question)
 
     # Step2：在知识库1中循环检索
     logging.info("开始在知识库1中检索")
@@ -266,18 +297,18 @@ def main(question: str):
         keywords.extend(extra[: 10 - len(keywords)])
         logging.info("扩展后的关键词: %s", keywords)
 
-    insights = []
-    references = []  # 记录所有引用的文档，便于生成报告
-
+    documents = []
     for doc_id, doc_name in zip(doc_ids, doc_names):
         logging.info("分析文件 %s", doc_name)
         md, real_name = download_and_convert(rag, KB1_ID, doc_id, doc_name)
-        insight = analyze_document(question, md)
-        insights.append(insight)
-        references.append((doc_id, real_name))
+        documents.append((doc_id, real_name, md))
+
+    tasks = [analyze_document(question, md) for _, _, md in documents]
+    insights = await asyncio.gather(*tasks)
+    references = [(doc_id, name) for doc_id, name, _ in documents]
 
 
-    report, title = compose_report(question, insights, references)
+    report, title = await compose_report(question, insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
@@ -299,4 +330,4 @@ if __name__ == "__main__":
         print("Usage: python kb_agent.py 'your question'")
         sys.exit(1)
     # 从命令行读取问题并执行主流程
-    main(sys.argv[1])
+    asyncio.run(main(sys.argv[1]))
