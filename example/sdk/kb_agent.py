@@ -113,19 +113,19 @@ def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str) -> Tuple[List[st
     return doc_ids, doc_names
 
 
-def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str, doc_name: str) -> str:
-    """\
-    下载指定文档并使用 MarkItDown 转换为 Markdown
-    """
-    logging.info("正在从知识库 %s 下载文档 %s", dataset_id, doc_name)
+def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str, fallback_name: str) -> tuple[str, str]:
+    """下载文档并返回 ``(markdown, 文件名)``"""
+
     dataset = rag.list_datasets(id=dataset_id)[0]
     document = dataset.list_documents(id=doc_id)[0]
+    name = document.name or fallback_name
+    logging.info("正在从知识库 %s 下载文档 %s", dataset_id, name)
     content = document.download()
-    logging.info("正在将文档 %s 转换为 Markdown", doc_name)
+    logging.info("正在将文档 %s 转换为 Markdown", name)
     md = MarkItDown()
     result = md.convert_stream(io.BytesIO(content))
     logging.info("转换后的 Markdown 长度: %d", len(result.markdown))
-    return result.markdown
+    return result.markdown, name
 
 
 def analyze_document(question: str, md_text: str) -> str:
@@ -156,13 +156,22 @@ def compose_report(
     insights: List[str],
     kb2_insights: List[str],
     references: List[Tuple[str, str]],
-) -> str:
-    """将所有分析结果交由 LLM 整合为最终 Markdown 调研报告"""
-    merged = []
+) -> tuple[str, str]:
+    """综合所有分析结果并生成 Markdown 报告"""
+
+    context_lines: List[str] = []
+    doc_list: List[Tuple[int, str]] = []
+    idx = 1
     for (doc_id, name), insight in zip(references, insights + kb2_insights):
-        merged.append(f"文档《{name}》的分析结果：{insight}")
-    context = "\n".join(merged)
-    prompt = "你是一名需求分析师，请基于下列文档分析结果整理最终报告，需要精炼话术，提炼关键信息和规则，并在内容中标注信息来源的文档名。\n问题：" + question + "\n" + context
+        if not insight or any(word in insight for word in ["无相关信息", "未查到"]):
+            continue
+        context_lines.append(f"{idx}. {name}: {insight}")
+        doc_list.append((idx, name))
+        idx += 1
+
+    context = "\n".join(context_lines)
+    prompt = "你是一名需求分析师，请根据下列文档内容整理回答，引用文档时使用[^编号]标注，编号对应文档清单。不要包含与问题无关的信息。\n问题：" + question + "\n" + context
+
     tokens = count_tokens(prompt)
     model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
     use_long = model == OPENAI_LONG_MODEL
@@ -179,11 +188,21 @@ def compose_report(
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
     )
-    summary = resp.choices[0].message.content.strip()
+    body = resp.choices[0].message.content.strip()
+
+    title_prompt = "请为以下问题和文档内容生成一个简洁的中文标题，不超过20个字。\n问题：" + question + "\n文档列表：" + ",".join(name for _, name in doc_list)
+    resp = cli.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": title_prompt}],
+        max_tokens=64,
+    )
+    title = resp.choices[0].message.content.strip()
+
     now = time.strftime("%Y-%m-%d %H:%M:%S")
-    report = f"标题：{question}\n时间：{now}\n\n内容:\n{summary}\n"
-    logging.info("生成最终报告，包含 %d 个引用", len(references))
-    return report
+    doc_lines = [f"[^{i}]: {name}" for i, name in doc_list]
+    report = f"标题：{title}\n时间：{now}\n\n内容：\n{body}\n\n参考文档：\n" + "\n".join(doc_lines)
+    logging.info("生成最终报告，包含 %d 个引用", len(doc_list))
+    return report, title
 
 
 # ---------- 主流程 ----------
@@ -228,10 +247,10 @@ def main(question: str):
 
     for doc_id, doc_name in zip(doc_ids, doc_names):
         logging.info("分析文件 %s", doc_name)
-        md = download_and_convert(rag, KB1_ID, doc_id, doc_name)
+        md, real_name = download_and_convert(rag, KB1_ID, doc_id, doc_name)
         insight = analyze_document(question, md)
         insights.append(insight)
-        references.append((doc_id, doc_name))
+        references.append((doc_id, real_name))
 
     # Step4：检索并分析知识库2的历史总结
     # 用同样的关键词在知识库2中检索既往总结
@@ -240,16 +259,18 @@ def main(question: str):
     kb2_insights = []
     for doc_id, doc_name in zip(kb2_doc_ids, kb2_doc_names):
         logging.info("分析知识库2文件 %s", doc_name)
-        md = download_and_convert(rag, KB2_ID, doc_id, doc_name)
+        md, real_name = download_and_convert(rag, KB2_ID, doc_id, doc_name)
         kb2_insight = analyze_document(question, md)
         kb2_insights.append(kb2_insight)
-        references.append((doc_id, doc_name))
+        references.append((doc_id, real_name))
 
-    report = compose_report(question, insights, kb2_insights, references)
+    report, title = compose_report(question, insights, kb2_insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
-    filename = f"{int(time.time())}_report.md"
+    ts = time.strftime("%Y%m%d%H%M")
+    safe_title = re.sub(r"[\\/:*?\"<>|]", "", title)
+    filename = f"{ts}{safe_title}.md"
     dataset = rag.list_datasets(id=KB2_ID)[0]
     dataset.upload_documents([{"display_name": filename, "blob": report.encode("utf-8")}])
     logging.info("已上传报告 %s", filename)
