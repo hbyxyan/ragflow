@@ -109,21 +109,17 @@ def parse_json_from_text(text: str) -> Dict[str, str]:
 
 
 async def extract_keywords(question: str, limit: int = 5) -> List[str]:
-    """\
-    使用 OpenAI 模型从问题中提取关键词
+    """使用长文本模型从问题中提取关键词"""
 
-    参数:
-        question: 用户提出的问题
-        limit: 最多提取的关键词数量
-
-    返回:
-        关键词列表
-    """
     logging.info("[LLM] 正在从问题中提取关键词: %s", question)
-    prompt = f"你是一个需求分析助理，从下面问题中精准提取不超过{limit}个核心关键词，这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。关键词间用逗号分隔。\n问题：" + question
-    async with rate_limiter:
-        resp = await client.chat.completions.create(
-            model=OPENAI_MODEL,
+    prompt = (
+        f"你是一个需求分析助理，从下面问题中精准提取不超过{limit}个核心关键词，"
+        "这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。关键词间用逗号分隔。\n"
+        "问题：" + question
+    )
+    async with rate_limiter_long:
+        resp = await client_long.chat.completions.create(
+            model=OPENAI_LONG_MODEL,
             messages=[{"role": "user", "content": prompt}],
         )
     text = resp.choices[0].message.content
@@ -132,6 +128,28 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     keywords = [k for k in keywords if k][:limit]
     logging.info("[LLM] 解析后的关键词: %s", keywords)
     return keywords
+
+
+async def extract_keywords_from_names(names: List[str], limit: int = 5) -> List[str]:
+    """使用长文本模型从文件名中提取关键词"""
+
+    if not names or limit <= 0:
+        return []
+    joined = "\n".join(names)
+    prompt = (
+        f"你是一个需求分析助理，从下面的文件名中提取不超过{limit}个关键词，关键词之间用逗号分隔，不需解释。\n文件名列表：\n"
+        + joined
+    )
+    async with rate_limiter_long:
+        resp = await client_long.chat.completions.create(
+            model=OPENAI_LONG_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    text = resp.choices[0].message.content
+    logging.info("[LLM] 文件名关键词提取结果: %s", text)
+    kws = re.split(r"[,\s]+", text.strip())
+    kws = [k for k in kws if k][:limit]
+    return kws
 
 
 def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str) -> Tuple[List[str], List[str]]:
@@ -171,7 +189,7 @@ async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
     """
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
     prompt = (
-        "你是一名需求分析师，精炼、直接地回答以下问题，并按照 JSON 结构返回结果。"
+        "你是一名需求分析师，精炼、直接地回答以下问题，内容仅限于文档中提及的具体信息，并按照 JSON 结构返回结果。"
         "若文档未提及某项，请将对应字段设为空字符串。示例：\n"
         '{"需求背景":"","需求目标":"","需求方案":"","测试要点":""}'
         "\n\n问题：" + question + "\n\n文档内容：\n" + md_text
@@ -297,8 +315,8 @@ async def main(question: str):
         if len(keywords) >= 10:
             break
         # 根据文档名再提取一些额外关键词，帮助下一轮检索
-        extra = [word for name in names for word in re.findall(r"[\w]+", name)]
-        keywords.extend(extra[: 10 - len(keywords)])
+        extra = await extract_keywords_from_names(names, 10 - len(keywords))
+        keywords.extend([k for k in extra if k not in keywords])
         logging.info("扩展后的关键词: %s", keywords)
 
     documents = []
