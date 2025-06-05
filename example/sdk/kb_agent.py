@@ -270,9 +270,24 @@ async def compose_report(
 
     context = "\n".join(context_lines)
     doc_list_str = "\n".join(f"{i}. {name}" for i, name in doc_list)
+
+    example = {
+        "需求背景": "",
+        "需求目标": "",
+        "需求方案": {
+            "触发方式": "",
+            "参与角色": "",
+            "处理流程": "",
+            "系统规则": "",
+            "字段与界面": "",
+            "通知与输出": "",
+        },
+        "测试要点": "",
+    }
+
     prompt = (
-        f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”提供清晰、结构化的回答。"
-        "请按照以下格式输出：\n【需求背景】\n【需求目标】\n【需求方案】\n- **触发方式**：...\n- **参与角色**：...\n- **处理流程**：...\n- **系统规则**：...\n- **字段与界面**：...\n- **通知与输出**：...\n【测试要点】\n如无信息请说明“文档未提及”。\n\n"
+        f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”提供清晰、结构化的回答，若某项无信息，请将对应字段设为空字符串。\n"
+        "请按照以下 JSON 结构回复：\n" + json.dumps(example, ensure_ascii=False) + "\n\n"
         "引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
         f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n不要提供未提及内容或一般概念解释，不做任何补充性建议。"
     )
@@ -295,9 +310,12 @@ async def compose_report(
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
     )
-    body = resp.choices[0].message.content.strip()
+    summary_json = parse_json_from_text(resp.choices[0].message.content)
 
-    title_prompt = f"请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{body}”"
+    title_prompt = (
+        "请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n"
+        f"问题：“{question}”\n文档：“{json.dumps(summary_json, ensure_ascii=False)}”"
+    )
     await limiter.wait()
     resp = await cli.chat.completions.create(
         model=model,
@@ -305,6 +323,24 @@ async def compose_report(
         max_tokens=64,
     )
     title = resp.choices[0].message.content.strip()
+
+    def fmt(text: str) -> str:
+        return text.strip() if text else ""
+
+    scheme = summary_json.get("需求方案", {})
+    body_parts = [
+        "【需求背景】\n" + fmt(summary_json.get("需求背景", "")),
+        "【需求目标】\n" + fmt(summary_json.get("需求目标", "")),
+        "【需求方案】",
+        f"- **触发方式**：{fmt(scheme.get('触发方式', ''))}",
+        f"- **参与角色**：{fmt(scheme.get('参与角色', ''))}",
+        f"- **处理流程**：{fmt(scheme.get('处理流程', ''))}",
+        f"- **系统规则**：{fmt(scheme.get('系统规则', ''))}",
+        f"- **字段与界面**：{fmt(scheme.get('字段与界面', ''))}",
+        f"- **通知与输出**：{fmt(scheme.get('通知与输出', ''))}",
+        "【测试要点】\n" + fmt(summary_json.get("测试要点", "")),
+    ]
+    body = "\n".join(body_parts)
 
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     doc_lines = [f"[^{i}]: {name}" for i, name in doc_list]
