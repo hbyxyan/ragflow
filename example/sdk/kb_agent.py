@@ -10,8 +10,9 @@
 5. 汇总所有分析结果生成 Markdown 报告，
    最后将报告回传到知识库2。
 
-运行前请设置环境变量 ``RAGFLOW_API_KEY``、``KB1_ID``、``KB2_ID``
-及 ``OPENAI_API_KEY``。
+运行前请设置环境变量 ``RAGFLOW_API_KEY``、``KB1_ID``、``KB2_ID``、
+``OPENAI_API_KEY``，如有需要可通过 ``OPENAI_BASE_URL`` 和 ``OPENAI_MODEL``
+指定模型服务地址和名称。
 """
 
 import os
@@ -19,7 +20,7 @@ import time
 import re
 from typing import List, Tuple
 
-import openai
+from openai import OpenAI
 from ragflow_sdk import RAGFlow
 from markitdown import MarkItDown
 import io
@@ -33,9 +34,11 @@ RAGFLOW_API_KEY = os.environ.get("RAGFLOW_API_KEY")
 KB1_ID = os.environ.get("KB1_ID")
 KB2_ID = os.environ.get("KB2_ID")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "Qwen/Qwen2.5-72B-Instruct")
 
-# 配置 OpenAI API Key
-openai.api_key = OPENAI_API_KEY
+# 配置 OpenAI 客户端
+client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 
 
 # ---------- 工具函数 ----------
@@ -55,8 +58,8 @@ def extract_keywords(question: str, limit: int = 5) -> List[str]:
     prompt = f"""You are an assistant that extracts the {limit} most important keywords from the question.
 Return the keywords separated by comma.
 Question: {question}"""
-    resp = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
+    resp = client.chat.completions.create(
+        model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
     )
     text = resp.choices[0].message.content
@@ -95,8 +98,8 @@ def analyze_document(question: str, md_text: str) -> str:
     让 LLM 对 Markdown 文档进行分析并提取问题相关信息
     """
     prompt = f"""Given the question: '{question}', extract the relevant information from the following document in markdown.\n\n{md_text}\n"""
-    resp = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
+    resp = client.chat.completions.create(
+        model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
     )
     return resp.choices[0].message.content
