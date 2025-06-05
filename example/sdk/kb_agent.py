@@ -11,9 +11,9 @@
    最后将报告回传到知识库2。
 
 运行前请设置环境变量 ``RAGFLOW_API_KEY``、``KB1_ID``、``KB2_ID``、
-``OPENAI_API_KEY``，如有需要可通过 ``OPENAI_BASE_URL`` 和 ``OPENAI_MODEL``
-指定模型服务地址和名称。若需在分析长文档时切换更大上下文的模型，
-可通过 ``OPENAI_LONG_MODEL`` 指定。
+``OPENAI_API_KEY``。如需自定义模型服务地址和名称，可通过 ``OPENAI_BASE_URL``
+和 ``OPENAI_MODEL`` 指定，默认为硅基流动的 DeepSeek-R1。若需要在分析
+长文档时切换到千问的 ``qwen-long-latest``，可通过 ``OPENAI_LONG_MODEL`` 指定。
 """
 
 import os
@@ -43,8 +43,10 @@ KB1_ID = os.environ.get("KB1_ID")
 KB2_ID = os.environ.get("KB2_ID")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "Qwen/Qwen2.5-72B-Instruct")
-OPENAI_LONG_MODEL = os.environ.get("OPENAI_LONG_MODEL", OPENAI_MODEL)
+# 默认模型使用 DeepSeek-R1（由硅基流动提供，支持 96K 上下文）
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "Pro/deepseek-ai/DeepSeek-R1")
+# 长文本分析模型使用千问的 qwen-long-latest，最大上下文约 10K，最大输出 8192
+OPENAI_LONG_MODEL = os.environ.get("OPENAI_LONG_MODEL", "Qwen/qwen-long-latest")
 
 # 配置 OpenAI 客户端
 client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
@@ -128,8 +130,9 @@ def analyze_document(question: str, md_text: str) -> str:
         f"Given the question: '{question}', extract the relevant information from the following document in markdown.\n\n{md_text}\n"
     )
     tokens = count_tokens(prompt)
-    model = OPENAI_LONG_MODEL if tokens > 90000 else OPENAI_MODEL
-    logging.info("[LLM] 选择模型 %s，输入 tokens %d 个", model, tokens)
+    # 根据输入 token 数量决定使用常规模型还是长上下文模型
+    model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
+    logging.info("[LLM] 使用模型 %s，输入 %d tokens", model, tokens)
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
