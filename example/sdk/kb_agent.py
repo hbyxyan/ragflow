@@ -6,9 +6,8 @@
 2. 在知识库1中循环检索相关文档；
 3. 下载文档后使用 `MarkItDown` 转换为 Markdown，
    让 LLM 结合问题进行分析；
-4. 在知识库2中检索既往总结并同样分析；
-5. 汇总所有分析结果生成 Markdown 报告，
-   最后将报告回传到知识库2。
+4. 汇总所有分析结果生成 Markdown 报告，
+   并将报告回传到知识库2 用于存档。
 
 运行前请设置环境变量 ``RAGFLOW_API_KEY``、``KB1_ID``、``KB2_ID``、
 ``OPENAI_API_KEY``。如需自定义模型服务地址和名称，可通过 ``OPENAI_BASE_URL``
@@ -277,16 +276,6 @@ def main(question: str):
         insights.append(insight)
         references.append((doc_id, real_name))
 
-    # Step4：在知识库2中检索并分析既往总结
-    logging.info("开始在知识库2中检索既往总结")
-    ids2, names2 = retrieve_docs(rag, KB2_ID, ",".join(keywords))
-    logging.info("检索关键词: %s -> 在知识库2找到 %d 个文档", ",".join(keywords), len(ids2))
-    for doc_id, doc_name in zip(ids2, names2):
-        logging.info("分析既往总结文件 %s", doc_name)
-        md, real_name = download_and_convert(rag, KB2_ID, doc_id, doc_name)
-        insight = analyze_document(question, md)
-        insights.append(insight)
-        references.append((doc_id, real_name))
 
     report, title = compose_report(question, insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
