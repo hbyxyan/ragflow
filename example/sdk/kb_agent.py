@@ -66,23 +66,19 @@ encoding = tiktoken.get_encoding("cl100k_base")
 
 
 class RateLimiter:
-    """简单的异步限速器，用于控制请求间隔"""
+    """控制请求启动间隔，使并发请求也能均匀发送"""
 
     def __init__(self, interval: float):
         self.interval = interval
         self.lock = asyncio.Lock()
-        self.last_call = 0.0
+        self.next_time = 0.0
 
-    async def __aenter__(self):
-        await self.lock.acquire()
-        wait = self.interval - (time.time() - self.last_call)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        self.last_call = time.time()
-        self.lock.release()
+    async def wait(self):
+        async with self.lock:
+            now = time.time()
+            if now < self.next_time:
+                await asyncio.sleep(self.next_time - now)
+            self.next_time = time.time() + self.interval
 
 
 rate_limiter = RateLimiter(1.5)
@@ -117,11 +113,11 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
         "这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。关键词间用逗号分隔。\n"
         "问题：" + question
     )
-    async with rate_limiter_long:
-        resp = await client_long.chat.completions.create(
-            model=OPENAI_LONG_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-        )
+    await rate_limiter_long.wait()
+    resp = await client_long.chat.completions.create(
+        model=OPENAI_LONG_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+    )
     text = resp.choices[0].message.content
     logging.info("[LLM] 关键词提取结果: %s", text)
     keywords = re.split(r"[,\s]+", text.strip())
@@ -130,36 +126,37 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     return keywords
 
 
-async def extract_keywords_from_names(
-    names: List[str], base_keywords: List[str], limit: int = 5
-) -> List[str]:
-    """使用长文本模型从文件名中提取关键词，并与原关键词去重校验"""
 
-    if not names or limit <= 0:
+async def extract_keywords_from_insights(
+    insights: List[Dict[str, str]],
+    question: str,
+    base_keywords: List[str],
+    limit: int = 5,
+) -> List[str]:
+    """根据文档分析结果提取额外关键词"""
+
+    if not insights or limit <= 0:
         return []
-    joined = "\n".join(names)
+    joined = "\n".join(json.dumps(i, ensure_ascii=False) for i in insights if i)
+    if not joined:
+        return []
     prompt = (
-        f"你是一个需求分析助理，从下面的文件名中提取不超过{limit}个关键词，关键词之间用逗号分隔，不需解释。\n文件名列表：\n"
-        + joined
+        f"你是需求分析助理，已提取的关键词有：{','.join(base_keywords)}。"
+        f"根据下面的文档分析结论和问题'{question}'，补充不超过{limit}个新的关键词，"
+        "按重要性排序，用逗号分隔给出。\n文档分析结论：\n" + joined
     )
-    async with rate_limiter_long:
-        resp = await client_long.chat.completions.create(
-            model=OPENAI_LONG_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-        )
+    await rate_limiter_long.wait()
+    resp = await client_long.chat.completions.create(
+        model=OPENAI_LONG_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+    )
     text = resp.choices[0].message.content
-    logging.info("[LLM] 文件名关键词提取结果: %s", text)
-    kws = re.split(r"[,\s]+", text.strip())
+    logging.info("[LLM] 追加关键词提取结果: %s", text)
+    kws = [k.strip() for k in re.split(r"[,\s]+", text) if k.strip()]
     result = []
     for k in kws:
-        k = k.strip()
-        if (
-            not k
-            or k in result
-            or not any(b.lower() in k.lower() or k.lower() in b.lower() for b in base_keywords)
-        ):
-            continue
-        result.append(k)
+        if k not in base_keywords and k not in result:
+            result.append(k)
         if len(result) >= limit:
             break
     return result
@@ -223,12 +220,12 @@ async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
     logging.info("[LLM] 使用模型 %s，输入 %d tokens，回复上限 %d", model, tokens, max_tokens)
     cli = client_long if use_long else client
     limiter = rate_limiter_long if use_long else rate_limiter
-    async with limiter:
-        resp = await cli.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-        )
+    await limiter.wait()
+    resp = await cli.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+    )
     result = resp.choices[0].message.content
     logging.info("[LLM] 分析结果: %s", result)
     return parse_json_from_text(result)
@@ -279,21 +276,21 @@ async def compose_report(
     )
     cli = client_long if use_long else client
     limiter = rate_limiter_long if use_long else rate_limiter
-    async with limiter:
-        resp = await cli.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-        )
+    await limiter.wait()
+    resp = await cli.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+    )
     body = resp.choices[0].message.content.strip()
 
     title_prompt = f"请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{body}”"
-    async with limiter:
-        resp = await cli.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": title_prompt}],
-            max_tokens=64,
-        )
+    await limiter.wait()
+    resp = await cli.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": title_prompt}],
+        max_tokens=64,
+    )
     title = resp.choices[0].message.content.strip()
 
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -318,7 +315,8 @@ async def main(question: str):
 
     # Step2：在知识库1中循环检索
     logging.info("开始在知识库1中检索")
-    doc_ids, doc_names = [], []
+    insights: List[Dict[str, str]] = []
+    references: List[Tuple[str, str]] = []
     tried = set()
     for _ in range(5):
         q = ",".join(keywords)
@@ -327,34 +325,32 @@ async def main(question: str):
         new_refs = [(i, n) for i, n in zip(ids, names) if i not in tried]
         if not new_refs:
             break
-        # 记录新发现的文档
-        for i, n in new_refs:
-            tried.add(i)
-            doc_ids.append(i)
-            doc_names.append(n)
-        logging.info("新增 %d 个文档", len(new_refs))
-        if len(keywords) >= 10:
+        documents = []
+        for doc_id, doc_name in new_refs:
+            tried.add(doc_id)
+            logging.info("分析文件 %s", doc_name)
+            md, real_name = download_and_convert(rag, KB1_ID, doc_id, doc_name)
+            documents.append((doc_id, real_name, md))
+
+        sem = asyncio.Semaphore(20)
+
+        async def sem_analyze(md: str):
+            async with sem:
+                return await analyze_document(question, md)
+
+        tasks = [sem_analyze(md) for _, _, md in documents]
+        results = await asyncio.gather(*tasks)
+        insights.extend(results)
+        references.extend([(doc_id, name) for doc_id, name, _ in documents])
+
+        extra = []
+        if len(keywords) < 10:
+            extra = await extract_keywords_from_insights(results, question, keywords, 10 - len(keywords))
+            if extra:
+                keywords.extend(extra)
+                logging.info("扩展后的关键词: %s", keywords)
+        if not extra or len(keywords) >= 10:
             break
-        # 根据文档名再提取一些额外关键词，帮助下一轮检索
-        extra = await extract_keywords_from_names(names, keywords, 10 - len(keywords))
-        keywords.extend([k for k in extra if k not in keywords])
-        logging.info("扩展后的关键词: %s", keywords)
-
-    documents = []
-    for doc_id, doc_name in zip(doc_ids, doc_names):
-        logging.info("分析文件 %s", doc_name)
-        md, real_name = download_and_convert(rag, KB1_ID, doc_id, doc_name)
-        documents.append((doc_id, real_name, md))
-
-    sem = asyncio.Semaphore(20)
-
-    async def sem_analyze(md: str):
-        async with sem:
-            return await analyze_document(question, md)
-
-    tasks = [sem_analyze(md) for _, _, md in documents]
-    insights = await asyncio.gather(*tasks)
-    references = [(doc_id, name) for doc_id, name, _ in documents]
 
     report, title = await compose_report(question, insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
