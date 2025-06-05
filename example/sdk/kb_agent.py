@@ -130,8 +130,10 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     return keywords
 
 
-async def extract_keywords_from_names(names: List[str], limit: int = 5) -> List[str]:
-    """使用长文本模型从文件名中提取关键词"""
+async def extract_keywords_from_names(
+    names: List[str], base_keywords: List[str], limit: int = 5
+) -> List[str]:
+    """使用长文本模型从文件名中提取关键词，并与原关键词去重校验"""
 
     if not names or limit <= 0:
         return []
@@ -148,17 +150,33 @@ async def extract_keywords_from_names(names: List[str], limit: int = 5) -> List[
     text = resp.choices[0].message.content
     logging.info("[LLM] 文件名关键词提取结果: %s", text)
     kws = re.split(r"[,\s]+", text.strip())
-    kws = [k for k in kws if k][:limit]
-    return kws
+    result = []
+    for k in kws:
+        k = k.strip()
+        if (
+            not k
+            or k in result
+            or not any(b.lower() in k.lower() or k.lower() in b.lower() for b in base_keywords)
+        ):
+            continue
+        result.append(k)
+        if len(result) >= limit:
+            break
+    return result
 
 
-def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str) -> Tuple[List[str], List[str]]:
-    """\
-    在指定知识库中检索问题相关的片段，
-    并返回所有涉及的文档 ID 与名称
-    """
+def retrieve_docs(
+    rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.2
+) -> Tuple[List[str], List[str]]:
+    """检索知识库并返回相关文档的 ID 与名称"""
+
     logging.info("在知识库 %s 中检索，查询: %s", dataset_id, question)
-    chunks = rag.retrieve(dataset_ids=[dataset_id], question=question)
+    chunks = rag.retrieve(
+        dataset_ids=[dataset_id],
+        question=question,
+        similarity_threshold=threshold,
+        top_k=20,
+    )
     doc_ids, doc_names = [], []
     for c in chunks:
         if c.document_id not in doc_ids:
@@ -170,17 +188,20 @@ def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str) -> Tuple[List[st
 
 def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str, fallback_name: str) -> tuple[str, str]:
     """下载文档并返回 ``(markdown, 文件名)``"""
-
-    dataset = rag.list_datasets(id=dataset_id)[0]
-    document = dataset.list_documents(id=doc_id)[0]
-    name = document.name or fallback_name
-    logging.info("正在从知识库 %s 下载文档 %s", dataset_id, name)
-    content = document.download()
-    logging.info("正在将文档 %s 转换为 Markdown", name)
-    md = MarkItDown()
-    result = md.convert_stream(io.BytesIO(content))
-    logging.info("转换后的 Markdown 长度: %d", len(result.markdown))
-    return result.markdown, name
+    try:
+        dataset = rag.list_datasets(id=dataset_id)[0]
+        document = dataset.list_documents(id=doc_id)[0]
+        name = document.name or fallback_name
+        logging.info("正在从知识库 %s 下载文档 %s", dataset_id, name)
+        content = document.download()
+        logging.info("正在将文档 %s 转换为 Markdown", name)
+        md = MarkItDown()
+        result = md.convert_stream(io.BytesIO(content))
+        logging.info("转换后的 Markdown 长度: %d", len(result.markdown))
+        return result.markdown, name
+    except Exception as exc:
+        logging.error("下载或转换文档 %s 失败: %s", fallback_name, exc)
+        return "", fallback_name
 
 
 async def analyze_document(question: str, md_text: str) -> Dict[str, str]:
@@ -240,10 +261,10 @@ async def compose_report(
     context = "\n".join(context_lines)
     doc_list_str = "\n".join(f"{i}. {name}" for i, name in doc_list)
     prompt = (
-        "你是一名需求分析师，请基于以下多个文档的具体内容，直接明确回答问题：“" + question + "”。仅使用【需求背景】【需求目标】【需求方案】【测试要点】进行结构化总结。\n\n"
-        "不分析或回答与问题无关的内容，也不要添加额外说明或标注。\n\n"
-        "引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
-        "文档内容：\n" + context + "\n\n文档清单：\n" + doc_list_str + "\n\n不要提供未提及内容或一般概念解释，不做任何补充性建议。"
+        f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”给出精炼回答，"
+        "严格使用以下结构：\n【需求背景】\n【需求目标】\n【需求方案】\n【测试要点】。"
+        "若某项无信息，可留空。\n\n引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
+        f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n不要提供未提及内容或一般概念解释，不做任何补充性建议。"
     )
 
     tokens = count_tokens(prompt)
@@ -315,7 +336,7 @@ async def main(question: str):
         if len(keywords) >= 10:
             break
         # 根据文档名再提取一些额外关键词，帮助下一轮检索
-        extra = await extract_keywords_from_names(names, 10 - len(keywords))
+        extra = await extract_keywords_from_names(names, keywords, 10 - len(keywords))
         keywords.extend([k for k in extra if k not in keywords])
         logging.info("扩展后的关键词: %s", keywords)
 
@@ -325,7 +346,13 @@ async def main(question: str):
         md, real_name = download_and_convert(rag, KB1_ID, doc_id, doc_name)
         documents.append((doc_id, real_name, md))
 
-    tasks = [analyze_document(question, md) for _, _, md in documents]
+    sem = asyncio.Semaphore(20)
+
+    async def sem_analyze(md: str):
+        async with sem:
+            return await analyze_document(question, md)
+
+    tasks = [sem_analyze(md) for _, _, md in documents]
     insights = await asyncio.gather(*tasks)
     references = [(doc_id, name) for doc_id, name, _ in documents]
 
