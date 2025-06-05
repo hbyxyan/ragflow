@@ -237,9 +237,9 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
     # 从文件名中解析发布时间，如 20181108发布_JK005-1234_xxx.docx
     m = re.search(r"(\d{8})", filename)
     if m:
-        data.setdefault("发布时间", m.group(1))
+        data["发布时间"] = m.group(1)
     else:
-        data.setdefault("发布时间", "")
+        data["发布时间"] = ""
     return data
 
 
@@ -280,7 +280,8 @@ async def compose_report(
     prompt = (
         f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”提供清晰、结构化的总结，"
         "请使用以下格式撰写，内容应来自文档明细，不得虚构或扩展：\n\n"
-        "【业务问题】\n...（如无内容请留空）\n\n"
+        "【业务问题】\n"
+        "请在每条业务问题前标注其发布时间，如 '20200101: xxx'，如无内容请留空\n\n"
         "【需求方案】\n"
         "- **触发方式**：...\n"
         "- **参与角色**：...\n"
@@ -290,7 +291,6 @@ async def compose_report(
         "- **通知与输出**：...\n\n"
         "请仅基于文档内容回答，若无信息请明确留空或说明未提及。\n"
         "引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
-        "若多个文档内容存在冲突，请以发布时间最近的为准，并在【其他说明】中说明冲突。\n\n"
         f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n"
         "不要提供未提及内容或一般概念解释，不做任何补充性建议."
     )
