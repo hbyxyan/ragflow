@@ -6,7 +6,8 @@
 2. 在知识库1中循环检索相关文档；
 3. 下载文档后使用 `MarkItDown` 转换为 Markdown，
    让 LLM 结合问题进行分析；
-4. 汇总所有分析结果生成 Markdown 报告，
+4. 在知识库2中检索既往总结并同样分析；
+5. 汇总所有分析结果生成 Markdown 报告，
    最后将报告回传到知识库2。
 
 运行前请设置环境变量 ``RAGFLOW_API_KEY``、``KB1_ID``、``KB2_ID``、
@@ -137,10 +138,12 @@ def analyze_document(question: str, md_text: str) -> str:
     """
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
     prompt = (
-        "你是一名资深需求分析师，专注于提取需求背景、需求目标、需求方案、"
-        f"测试要点这几个方面的关键内容。请仔细分析下面的需求分析文档，针对问题'{question}'，"
-        "精炼并逐项列出相关内容，若文档未提及相关信息，请直接回答“无相关信息”。\n\n文档内容：\n"
-        + md_text
+        "你是一名需求分析师，精炼、直接地回答以下问题，内容仅限于文档中提及的具体信息，切勿增加任何背景说明或通用解释。\n\n"
+        f"问题：“{question}”\n\n"
+        "请明确指出文档中是否存在与此问题直接相关的信息：\n"
+        "- 如果存在，逐条列出【需求背景】【需求目标】【需求方案】【测试要点】中涉及的内容。\n"
+        "- 如果不存在，请直接回答“无相关信息”。\n\n"
+        "文档内容：\n" + md_text
     )
     tokens = count_tokens(prompt)
     # 根据输入 token 数量决定使用常规模型还是长上下文模型
@@ -177,11 +180,18 @@ def compose_report(
         idx += 1
 
     context = "\n".join(context_lines)
+    doc_list_str = "\n".join(f"{i}. {name}" for i, name in doc_list)
     prompt = (
-        "你是需求分析领域的专家，请基于以下文档内容，针对问题'"
+        "你是一名需求分析师，请基于以下多个文档的具体内容，直接明确回答问题：“"
         + question
-        + "'，提供清晰、结构化的回答，建议以“需求背景”、“需求目标”、“需求方案”和“测试要点”为结构进行组织，并引用相应文档。若某项无信息，可跳过该项。引用文档时请使用 [^编号] 标注，编号对应文档清单。不要包含与问题无关的信息。\n\n文档内容：\n"
+        + "”。仅使用【需求背景】【需求目标】【需求方案】【测试要点】进行结构化总结。\n\n"
+        "不分析或回答与问题无关的内容，也不要添加额外说明或标注。\n\n"
+        "引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
+        "文档内容：\n"
         + context
+        + "\n\n文档清单：\n"
+        + doc_list_str
+        + "\n\n不要提供未提及内容或一般概念解释，不做任何补充性建议。"
     )
 
     tokens = count_tokens(prompt)
@@ -202,7 +212,10 @@ def compose_report(
     )
     body = resp.choices[0].message.content.strip()
 
-    title_prompt = "请为以下问题和文档内容生成一个简洁的中文标题，不超过20个字。\n问题：" + question + "\n文档列表：" + ",".join(name for _, name in doc_list)
+    title_prompt = (
+        "请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n"
+        f"问题：“{question}”\n文档：“{body}”"
+    )
     resp = cli.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": title_prompt}],
@@ -260,6 +273,17 @@ def main(question: str):
     for doc_id, doc_name in zip(doc_ids, doc_names):
         logging.info("分析文件 %s", doc_name)
         md, real_name = download_and_convert(rag, KB1_ID, doc_id, doc_name)
+        insight = analyze_document(question, md)
+        insights.append(insight)
+        references.append((doc_id, real_name))
+
+    # Step4：在知识库2中检索并分析既往总结
+    logging.info("开始在知识库2中检索既往总结")
+    ids2, names2 = retrieve_docs(rag, KB2_ID, ",".join(keywords))
+    logging.info("检索关键词: %s -> 在知识库2找到 %d 个文档", ",".join(keywords), len(ids2))
+    for doc_id, doc_name in zip(ids2, names2):
+        logging.info("分析既往总结文件 %s", doc_name)
+        md, real_name = download_and_convert(rag, KB2_ID, doc_id, doc_name)
         insight = analyze_document(question, md)
         insights.append(insight)
         references.append((doc_id, real_name))
