@@ -14,6 +14,8 @@
 ``OPENAI_API_KEY``。如需自定义模型服务地址和名称，可通过 ``OPENAI_BASE_URL``
 和 ``OPENAI_MODEL`` 指定，默认为硅基流动的 DeepSeek-R1。若需要在分析
 长文档时切换到千问的 ``qwen-long-latest``，可通过 ``OPENAI_LONG_MODEL`` 指定。
+如果长文本模型与默认模型由不同厂商提供，可另外设置 ``OPENAI_LONG_API_KEY``
+和 ``OPENAI_LONG_BASE_URL`` 以使用不同的鉴权信息和服务地址。
 """
 
 import os
@@ -43,6 +45,9 @@ KB1_ID = os.environ.get("KB1_ID")
 KB2_ID = os.environ.get("KB2_ID")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1")
+# 当长文本模型来自不同厂商时，可通过以下变量指定其专用的 KEY 和地址
+OPENAI_LONG_API_KEY = os.environ.get("OPENAI_LONG_API_KEY", OPENAI_API_KEY)
+OPENAI_LONG_BASE_URL = os.environ.get("OPENAI_LONG_BASE_URL", OPENAI_BASE_URL)
 # 默认模型使用 DeepSeek-R1（由硅基流动提供，支持 96K 上下文）
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "Pro/deepseek-ai/DeepSeek-R1")
 # 长文本分析模型使用千问的 qwen-long-latest，最大上下文约 10K，最大输出 8192
@@ -50,6 +55,7 @@ OPENAI_LONG_MODEL = os.environ.get("OPENAI_LONG_MODEL", "Qwen/qwen-long-latest")
 
 # 配置 OpenAI 客户端
 client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+client_long = OpenAI(api_key=OPENAI_LONG_API_KEY, base_url=OPENAI_LONG_BASE_URL)
 
 encoding = tiktoken.get_encoding("cl100k_base")
 
@@ -132,8 +138,10 @@ def analyze_document(question: str, md_text: str) -> str:
     tokens = count_tokens(prompt)
     # 根据输入 token 数量决定使用常规模型还是长上下文模型
     model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
+    use_long = model == OPENAI_LONG_MODEL
     logging.info("[LLM] 使用模型 %s，输入 %d tokens", model, tokens)
-    resp = client.chat.completions.create(
+    cli = client_long if use_long else client
+    resp = cli.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
     )
