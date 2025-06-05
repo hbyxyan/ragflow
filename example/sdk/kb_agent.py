@@ -113,15 +113,15 @@ def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str) -> Tuple[List[st
     return doc_ids, doc_names
 
 
-def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str) -> str:
+def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str, doc_name: str) -> str:
     """\
     下载指定文档并使用 MarkItDown 转换为 Markdown
     """
-    logging.info("正在从知识库 %s 下载文档 %s", dataset_id, doc_id)
+    logging.info("正在从知识库 %s 下载文档 %s", dataset_id, doc_name)
     dataset = rag.list_datasets(id=dataset_id)[0]
     document = dataset.list_documents(id=doc_id)[0]
     content = document.download()
-    logging.info("正在将文档 %s 转换为 Markdown", doc_id)
+    logging.info("正在将文档 %s 转换为 Markdown", doc_name)
     md = MarkItDown()
     result = md.convert_stream(io.BytesIO(content))
     logging.info("转换后的 Markdown 长度: %d", len(result.markdown))
@@ -133,7 +133,7 @@ def analyze_document(question: str, md_text: str) -> str:
     让 LLM 对 Markdown 文档进行分析并提取问题相关信息
     """
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
-    prompt = f"Given the question: '{question}', extract the relevant information from the following document in markdown.\n\n{md_text}\n"
+    prompt = f"你是一名需求分析师，请阅读以下文档并针对问题'{question}'提取关键信息和重要规则，要求回答精炼。如果文档中未提到相关内容，则回答\"无相关信息\"。\n\n" + md_text
     tokens = count_tokens(prompt)
     # 根据输入 token 数量决定使用常规模型还是长上下文模型
     model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
@@ -151,14 +151,37 @@ def analyze_document(question: str, md_text: str) -> str:
     return result
 
 
-def compose_report(insights: List[str], kb2_insights: List[str], references: List[Tuple[str, str]]) -> str:
-    """\
-    整合分析结果并生成最终的 Markdown 调研报告
-    """
+def compose_report(
+    question: str,
+    insights: List[str],
+    kb2_insights: List[str],
+    references: List[Tuple[str, str]],
+) -> str:
+    """将所有分析结果交由 LLM 整合为最终 Markdown 调研报告"""
+    merged = []
+    for (doc_id, name), insight in zip(references, insights + kb2_insights):
+        merged.append(f"文档《{name}》的分析结果：{insight}")
+    context = "\n".join(merged)
+    prompt = "你是一名需求分析师，请基于下列文档分析结果整理最终报告，需要精炼话术，提炼关键信息和规则，并在内容中标注信息来源的文档名。\n问题：" + question + "\n" + context
+    tokens = count_tokens(prompt)
+    model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
+    use_long = model == OPENAI_LONG_MODEL
+    max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
+    logging.info(
+        "[LLM] 汇总报告使用模型 %s，输入 %d tokens，回复上限 %d",
+        model,
+        tokens,
+        max_tokens,
+    )
+    cli = client_long if use_long else client
+    resp = cli.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+    )
+    summary = resp.choices[0].message.content.strip()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
-    ref_lines = [f"- {name} ({doc_id})" for doc_id, name in references]
-    body = "\n".join(insights + kb2_insights)
-    report = f"标题：自动化调研报告\n时间：{now}\n\n内容:\n{body}\n\n引用:\n" + "\n".join(ref_lines)
+    report = f"标题：{question}\n时间：{now}\n\n内容:\n{summary}\n"
     logging.info("生成最终报告，包含 %d 个引用", len(references))
     return report
 
@@ -205,7 +228,7 @@ def main(question: str):
 
     for doc_id, doc_name in zip(doc_ids, doc_names):
         logging.info("分析文件 %s", doc_name)
-        md = download_and_convert(rag, KB1_ID, doc_id)
+        md = download_and_convert(rag, KB1_ID, doc_id, doc_name)
         insight = analyze_document(question, md)
         insights.append(insight)
         references.append((doc_id, doc_name))
@@ -217,12 +240,12 @@ def main(question: str):
     kb2_insights = []
     for doc_id, doc_name in zip(kb2_doc_ids, kb2_doc_names):
         logging.info("分析知识库2文件 %s", doc_name)
-        md = download_and_convert(rag, KB2_ID, doc_id)
+        md = download_and_convert(rag, KB2_ID, doc_id, doc_name)
         kb2_insight = analyze_document(question, md)
         kb2_insights.append(kb2_insight)
         references.append((doc_id, doc_name))
 
-    report = compose_report(insights, kb2_insights, references)
+    report = compose_report(question, insights, kb2_insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
