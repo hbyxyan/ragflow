@@ -141,8 +141,9 @@ async def extract_keywords_from_insights(
         return []
     prompt = (
         f"你是需求分析助理，已提取的关键词有：{','.join(base_keywords)}。"
-        f"根据下面的文档分析结论和问题'{question}'，补充不超过{limit}个新的与问题解答可能相关的关键词，"
-        "按重要性排序，用逗号分隔给出。\n文档分析结论：\n" + joined
+        f"根据下面的文档分析结论和问题'{question}'，补充不超过{limit}个新的与问题解答可能相关的关键词。"
+        "关键词应聚焦于业务动作或场景，并尽量精简，不包含'规则'、'流程'等修饰词，例如'投保规则'应简化为'投保'。"
+        "\n按重要性排序，用逗号分隔给出。\n文档分析结论：\n" + joined
     )
     await rate_limiter_long.wait()
     resp = await client_long.chat.completions.create(
