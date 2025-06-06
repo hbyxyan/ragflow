@@ -278,20 +278,20 @@ async def compose_report(
     doc_list_str = "\n".join(f"{i}. {name}" for i, name in doc_list)
 
     prompt = (
-        f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”提供清晰、结构化的总结，\n"
-        "请仅基于文档内容回答，若无信息请留空。\n"
-        "不做任何补充性建议和解释、不说与问题无关的任何内容.\n"
-        "请严格按以下格式撰写，内容应来自文档明细，不虚构或扩展：\n\n"
-        "【业务问题】\n"
-        "请在每条业务问题前标注其发布时间，如 '20200101: xxx'，如无内容请留空\n\n"
-        "【关键内容】\n"
-        "- **触发方式**：...\n"
-        "- **参与角色**：...\n"
-        "- **处理流程**：...\n"
-        "- **系统规则**：...\n"
-        "- **字段与界面**：...\n"
-        "- **通知与输出**：...\n\n"
-        "引用文档时请使用 [^编号] 标注，编号对应文档清单。\n\n"
+        f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”生成汇总报告，"
+        "不得添加与问题无关的说明。请严格按照下面的 Markdown 模板填写：\n\n"
+        "## 1. 业务问题\n"
+        "- `20240101:` xxx\n"
+        "如无内容，请写：“文档未提及。”\n\n"
+        "## 2. 关键内容\n"
+        "### 2.1 触发方式\n- ...\n"
+        "### 2.2 参与角色\n- ...\n"
+        "### 2.3 处理流程\n1. ...\n"
+        "### 2.4 系统规则\n- ...\n"
+        "### 2.5 字段与界面\n- ...\n"
+        "### 2.6 通知与输出\n- ...\n\n"
+        "## 3. 其他说明\n...\n\n"
+        "引用文档时请在正文中使用 [^编号] 标注，编号对应文档清单。\n\n"
         f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n"
     )
 
@@ -315,7 +315,10 @@ async def compose_report(
     )
     summary_md = resp.choices[0].message.content.strip()
 
-    title_prompt = f"请根据以下问题，生成一个简洁明确的中文标题，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{summary_md}”"
+    title_prompt = (
+        f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，"
+        f"切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{summary_md}”"
+    )
     await limiter.wait()
     resp = await cli.chat.completions.create(
         model=model,
@@ -326,9 +329,8 @@ async def compose_report(
 
     body = summary_md
 
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
     doc_lines = [f"[^{i}]: {name}" for i, name in doc_list]
-    report = f"标题：{title}\n时间：{now}\n\n内容：\n{body}\n\n参考文档：\n" + "\n".join(doc_lines)
+    report = f"# 标题：{title}\n\n{body}\n\n## 4. 引用文档\n" + "\n".join(doc_lines)
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list))
     return report, title
 
