@@ -251,7 +251,7 @@ async def compose_report(
     """综合所有分析结果并生成 Markdown 报告"""
 
     context_lines: List[str] = []
-    doc_list: List[Tuple[int, str]] = []
+    doc_list: List[Tuple[int, str, str]] = []
     idx = 1
     for (doc_id, name), insight in zip(references, insights):
         if not insight:
@@ -271,27 +271,34 @@ async def compose_report(
             continue
 
         context_lines.append(f"{idx}. {name}: " + json.dumps(insight, ensure_ascii=False))
-        doc_list.append((idx, name))
+        pub = insight.get("发布时间", "") if isinstance(insight, dict) else ""
+        doc_list.append((idx, name, pub))
         idx += 1
 
     context = "\n".join(context_lines)
-    doc_list_str = "\n".join(f"{i}. {name}" for i, name in doc_list)
+    doc_list_str = "\n".join(f"{i}. {name}" for i, name, _ in doc_list)
 
     prompt = (
-        f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”生成汇总报告，"
-        "不得添加与问题无关的说明。请严格按照下面的 Markdown 模板填写：\n\n"
-        "## 1. 业务问题\n"
-        "- `20240101:` xxx\n"
-        "如无内容，请写：“文档未提及。”\n\n"
-        "## 2. 关键内容\n"
-        "### 2.1 触发方式\n- ...\n"
-        "### 2.2 参与角色\n- ...\n"
-        "### 2.3 处理流程\n1. ...\n"
-        "### 2.4 系统规则\n- ...\n"
-        "### 2.5 字段与界面\n- ...\n"
-        "### 2.6 通知与输出\n- ...\n\n"
-        "## 3. 其他说明\n...\n\n"
-        "引用文档时请在正文中使用 [^编号] 标注，编号对应文档清单。\n\n"
+        f"你是需求分析领域的专家，请基于以下文档内容，针对问题“{question}”撰写调研报告，"
+        "不得添加与问题无关的说明。请按照下列 Markdown 模板输出：\n\n"
+        "## 一、问题分析\n"
+        "根据用户的问题，简要描述本次调研关注的业务场景、核心背景或问题缘由。\n\n"
+        "## 二、调研目标\n"
+        "- 汇总历史文档中与该业务问题相关的内容\n"
+        "- 分析差异，梳理现行规则\n\n"
+        "## 三、主要信息摘录\n"
+        "| 文档标题 | 发布时间 | 业务问题 | 摘要/方案要点 |\n"
+        "| --- | --- | --- | --- |\n"
+        "(请根据文档内容按编号列出，缺失信息留空)\n\n"
+        "> *注：如业务问题或方案要点无内容则留空。*\n\n"
+        "## 四、主要差异与共性分析\n"
+        "在每个要点下使用 '- [^编号]: 内容' 的形式列出来自不同文档的关键信息。\n"
+        "- **触发方式**\n"
+        "- **处理流程**\n"
+        "- **输出内容/系统规则**\n\n"
+        "## 五、分析结论与建议\n- 简要归纳整体趋势、潜在冲突和建议的措施。\n\n"
+        "## 六、引用文档\n"
+        "(请在此列出文档清单，并与正文标注的编号一致)\n\n"
         f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n"
     )
 
@@ -329,8 +336,13 @@ async def compose_report(
 
     body = summary_md
 
-    doc_lines = [f"[^{i}]: {name}" for i, name in doc_list]
-    report = f"# 标题：{title}\n\n{body}\n\n## 4. 引用文档\n" + "\n".join(doc_lines)
+    doc_lines = []
+    for i, name, pub in doc_list:
+        if pub:
+            doc_lines.append(f"[^{i}]: {name}（{pub}）")
+        else:
+            doc_lines.append(f"[^{i}]: {name}")
+    report = f"# 标题：{title}\n\n{body}\n\n## 六、引用文档\n" + "\n".join(doc_lines)
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list))
     return report, title
 
