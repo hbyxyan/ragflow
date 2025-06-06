@@ -108,7 +108,11 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     """使用长文本模型从问题中提取关键词"""
 
     logging.info("[LLM] 正在从问题中提取关键词: %s", question)
-    prompt = f"你是一个需求分析助理，从下面问题中精准提取不超过{limit}个核心关键词，这些关键词应聚焦在“业务场景”、“需求目标”和“功能特性”。关键词间用逗号分隔。\n问题：" + question
+    prompt = (
+        f"你是一个需求分析助理，请从下面的问题中提取不超过{limit}个核心关键词。"
+        "关键词应聚焦于业务动作或场景，并尽量精简，不包含'规则'、'流程'等修饰词。"
+        "例如：'投保规则'应简化为'投保'。关键词间用逗号分隔。\n问题：" + question
+    )
     await rate_limiter_long.wait()
     resp = await client_long.chat.completions.create(
         model=OPENAI_LONG_MODEL,
