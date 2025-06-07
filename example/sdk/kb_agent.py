@@ -322,14 +322,12 @@ async def compose_report(
 
     batch_summaries: List[str] = []
     doc_list_full: List[Tuple[int, str, str]] = []
-    for start in range(0, len(docs), 20):
-        batch = docs[start:start + 20]
+    async def summarize_batch(batch_docs: List[Tuple[int, str, str, Dict]]) -> str:
         context_lines = []
         doc_list = []
-        for i, name, pub, insight in batch:
+        for i, name, pub, insight in batch_docs:
             context_lines.append(f"{i}. {name}: " + json.dumps(insight, ensure_ascii=False))
             doc_list.append((i, name, pub))
-            doc_list_full.append((i, name, pub))
         context = "\n".join(context_lines)
         doc_list_str = "\n".join(f"{i}. {name}" for i, name, _ in doc_list)
 
@@ -380,7 +378,15 @@ async def compose_report(
         MODELS_USED.add(model)
         summary_md = resp.choices[0].message.content.strip()
         summary_md = re.sub(r"## 六、引用文档.*", "", summary_md, flags=re.S).rstrip()
-        batch_summaries.append(summary_md)
+        return summary_md
+
+    batch_tasks = []
+    for start in range(0, len(docs), 20):
+        batch = docs[start:start + 20]
+        doc_list_full.extend([(i, name, pub) for i, name, pub, _ in batch])
+        batch_tasks.append(summarize_batch(batch))
+
+    batch_summaries = await asyncio.gather(*batch_tasks)
 
     final_context = "\n\n".join(batch_summaries)
     final_prompt = (
