@@ -402,7 +402,7 @@ async def compose_report(
         f"模型：{','.join(MODELS_USED)}\n"
     )
     report = (
-        f"# 标题：{title}\n\n{meta}\n{body}\n\n## 六、引用文档\n" + "\n".join(doc_lines) + "\n"
+        f"# 标题：{title}\n\n{meta}\n{body}\n\n## 六、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     )
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list))
     return report, title
