@@ -316,6 +316,8 @@ async def compose_report(
                 return True
         return False
 
+    global TOKENS_IN, TOKENS_OUT, MODELS_USED
+
     docs: List[Tuple[int, str, str, Dict]] = []
     idx = 1
     for (doc_id, name), insight in zip(references, insights):
