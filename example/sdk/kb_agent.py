@@ -58,6 +58,13 @@ OPENAI_LONG_MODEL = os.environ.get("OPENAI_LONG_MODEL", "Qwen/qwen-long-latest")
 OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS", "2048"))
 OPENAI_LONG_MAX_TOKENS = int(os.environ.get("OPENAI_LONG_MAX_TOKENS", "8192"))
 
+# Rerank 服务相关配置
+RERANK_MODEL = os.environ.get("RERANK_MODEL", "")
+RERANK_BASE_URL = os.environ.get("RERANK_BASE_URL", "")
+
+# 检索结果返回的最大文档数
+TOP_K = int(os.environ.get("TOP_K", "100"))
+
 # 配置 OpenAI 客户端（异步）
 client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
 client_long = AsyncOpenAI(api_key=OPENAI_LONG_API_KEY, base_url=OPENAI_LONG_BASE_URL)
@@ -180,7 +187,9 @@ async def extract_keywords_from_insights(
     return result
 
 
-def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.3) -> Tuple[List[str], List[str]]:
+def retrieve_docs(
+    rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.3
+) -> Tuple[List[str], List[str]]:
     """检索知识库并返回相关文档的 ID 与名称"""
 
     logging.info("在知识库 %s 中检索，查询: %s", dataset_id, question)
@@ -188,7 +197,8 @@ def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str, threshold: float
         dataset_ids=[dataset_id],
         question=question,
         similarity_threshold=threshold,
-        top_k=20,
+        top_k=TOP_K,
+        rerank_id=RERANK_MODEL,
     )
     doc_ids, doc_names = [], []
     for c in chunks:
@@ -284,70 +294,107 @@ async def compose_report(
     insights: List[Dict[str, str]],
     references: List[Tuple[str, str]],
 ) -> tuple[str, str]:
-    """综合所有分析结果并生成 Markdown 报告"""
+    """综合所有分析结果并生成 Markdown 报告，按批次处理"""
 
-    context_lines: List[str] = []
-    doc_list: List[Tuple[int, str, str]] = []
+    def has_value(obj: Dict) -> bool:
+        for v in obj.values():
+            if isinstance(v, dict):
+                if has_value(v):
+                    return True
+            elif str(v).strip():
+                return True
+        return False
+
+    docs: List[Tuple[int, str, str, Dict]] = []
     idx = 1
     for (doc_id, name), insight in zip(references, insights):
         if not insight:
             continue
-
-        # 判断该分析是否包含有效内容
-        def has_value(obj: Dict) -> bool:
-            for v in obj.values():
-                if isinstance(v, dict):
-                    if has_value(v):
-                        return True
-                elif str(v).strip():
-                    return True
-            return False
-
         plan = insight.get("需求方案", {}) if isinstance(insight, dict) else {}
         if isinstance(plan, dict) and all(not str(v).strip() for v in plan.values()):
             logging.info("需求方案为空，跳过文档 %s", name)
             continue
         if not has_value(insight):
             continue
-
-        context_lines.append(f"{idx}. {name}: " + json.dumps(insight, ensure_ascii=False))
         pub = insight.get("发布时间", "") if isinstance(insight, dict) else ""
-        doc_list.append((idx, name, pub))
+        docs.append((idx, name, pub, insight))
         idx += 1
 
-    context = "\n".join(context_lines)
-    doc_list_str = "\n".join(f"{i}. {name}" for i, name, _ in doc_list)
+    batch_summaries: List[str] = []
+    doc_list_full: List[Tuple[int, str, str]] = []
+    for start in range(0, len(docs), 20):
+        batch = docs[start:start + 20]
+        context_lines = []
+        doc_list = []
+        for i, name, pub, insight in batch:
+            context_lines.append(f"{i}. {name}: " + json.dumps(insight, ensure_ascii=False))
+            doc_list.append((i, name, pub))
+            doc_list_full.append((i, name, pub))
+        context = "\n".join(context_lines)
+        doc_list_str = "\n".join(f"{i}. {name}" for i, name, _ in doc_list)
 
-    prompt = (
-        f"你是需求分析领域的专家，请基于以下文档内容，针对问题‘{question}’撰写调研报告，"
-        "不得添加与问题无关的说明。请严格遵循下列 Markdown 结构输出：\n\n"
-        "## 一、问题分析  \n"
-        "请基于用户的问题，简要描述本次调研关注的业务场景、核心背景或问题缘由。如问题本身已包含场景，可直接转述。\n\n"
-        "## 二、调研目标  \n"
-        "- 汇总历史文档中与“{{业务问题}}”相关的内容  \n"
-        "- 分析差异，梳理现行规则  \n\n"
-        "## 三、主要信息摘录  \n"
-        "| 来源 | 发布时间 | 业务问题 | 摘要/方案要点 |  \n"
-        "| --- | --- | --- | --- |  \n"
-        "(请根据文档内容按编号列出，缺失信息留空)\n\n"
-        "*注：如业务问题或方案要点无内容则留空。*\n\n"
-        "## 四、相关内容分析  \n"
-        "请优先按如下要素（如有）：触发方式、处理流程、系统规则、字段与界面、通知与输出，做结构化归纳。\n"
-        "如无结构化内容，可自由梳理所有与问题直接相关的分析和原文片段。\n\n"
-        "## 五、现状总结  \n"
-        f"请综合上文内容，简明归纳目前关于“{question}”的系统现状、业务做法或得出的结论。如有争议点或不一致，也请注明。\n\n"
-        "请在正文中使用形如[^1]的标注引用文档，编号与文档清单一致。\n\n"
-        f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n"
+        prompt = (
+            f"你是需求分析领域的专家，请基于以下文档内容，针对问题‘{question}’撰写调研报告，"
+            "不得添加与问题无关的说明。请严格遵循下列 Markdown 结构输出：\n\n"
+            "## 一、问题分析  \n"
+            "请基于用户的问题，简要描述本次调研关注的业务场景、核心背景或问题缘由。如问题本身已包含场景，可直接转述。\n\n"
+            "## 二、调研目标  \n"
+            "- 汇总历史文档中与“{业务问题}”相关的内容  \n"
+            "- 分析差异，梳理现行规则  \n\n"
+            "## 三、主要信息摘录  \n"
+            "| 来源 | 发布时间 | 业务问题 | 摘要/方案要点 |  \n"
+            "| --- | --- | --- | --- |  \n"
+            "(请根据文档内容按编号列出，缺失信息留空)\n\n"
+            "*注：如业务问题或方案要点无内容则留空。*\n\n"
+            "## 四、相关内容分析  \n"
+            "请优先按如下要素（如有）：触发方式、处理流程、系统规则、字段与界面、通知与输出，做结构化归纳。\n"
+            "如无结构化内容，可自由梳理所有与问题直接相关的分析和原文片段。\n\n"
+            "## 五、现状总结  \n"
+            f"请综合上文内容，简明归纳目前关于“{question}”的系统现状、业务做法或得出的结论。如有争议点或不一致，也请注明。\n\n"
+            "请在正文中使用形如[^1]的标注引用文档，编号与文档清单一致。\n\n"
+            f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n"
+        )
+
+        tokens = count_tokens(prompt)
+        model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
+        use_long = model == OPENAI_LONG_MODEL
+        max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
+        logging.info(
+            "[LLM] 分批汇总使用模型 %s，输入 %d tokens，回复上限 %d",
+            model,
+            tokens,
+            max_tokens,
+        )
+        cli = client_long if use_long else client
+        limiter = rate_limiter_long if use_long else rate_limiter
+        await limiter.wait()
+        resp = await cli.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+        )
+        tokens_resp = count_tokens(resp.choices[0].message.content)
+        global TOKENS_IN, TOKENS_OUT
+        TOKENS_IN += tokens
+        TOKENS_OUT += tokens_resp
+        MODELS_USED.add(model)
+        summary_md = resp.choices[0].message.content.strip()
+        summary_md = re.sub(r"## 六、引用文档.*", "", summary_md, flags=re.S).rstrip()
+        batch_summaries.append(summary_md)
+
+    final_context = "\n\n".join(batch_summaries)
+    final_prompt = (
+        f"你是需求分析领域的专家，请基于下列分批汇总内容，针对问题‘{question}’生成最终调研报告，"
+        "不得添加与问题无关的说明。内容以中文输出。\n\n" + final_context
     )
-
-    tokens = count_tokens(prompt)
-    model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
+    tokens_final = count_tokens(final_prompt)
+    model = OPENAI_LONG_MODEL if tokens_final > 95000 else OPENAI_MODEL
     use_long = model == OPENAI_LONG_MODEL
     max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
     logging.info(
-        "[LLM] 汇总报告使用模型 %s，输入 %d tokens，回复上限 %d",
+        "[LLM] 最终汇总使用模型 %s，输入 %d tokens，回复上限 %d",
         model,
-        tokens,
+        tokens_final,
         max_tokens,
     )
     cli = client_long if use_long else client
@@ -355,21 +402,17 @@ async def compose_report(
     await limiter.wait()
     resp = await cli.chat.completions.create(
         model=model,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": final_prompt}],
         max_tokens=max_tokens,
     )
     tokens_resp = count_tokens(resp.choices[0].message.content)
-    global TOKENS_IN, TOKENS_OUT
-    TOKENS_IN += tokens
+    TOKENS_IN += tokens_final
     TOKENS_OUT += tokens_resp
     MODELS_USED.add(model)
-    summary_md = resp.choices[0].message.content.strip()
-    # 移除模型生成内容中的引用文档列表，避免与脚本生成的部分重复
-    summary_md = re.sub(r"## 六、引用文档.*", "", summary_md, flags=re.S).rstrip()
+    body = resp.choices[0].message.content.strip()
 
     title_prompt = (
-        f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，"
-        f"切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{summary_md}”"
+        f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{body}”"
     )
     await limiter.wait()
     tokens_prompt2 = count_tokens(title_prompt)
@@ -384,10 +427,8 @@ async def compose_report(
     MODELS_USED.add(model)
     title = resp.choices[0].message.content.strip()
 
-    body = summary_md
-
     doc_lines = []
-    for i, name, pub in doc_list:
+    for i, name, pub in doc_list_full:
         if pub:
             doc_lines.append(f"[^{i}]: {name}（{pub}）")
         else:
@@ -404,7 +445,7 @@ async def compose_report(
     report = (
         f"# 标题：{title}\n\n{meta}\n{body}\n\n## 六、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     )
-    logging.info("生成最终报告，包含 %d 个引用", len(doc_list))
+    logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
     return report, title
 
 
@@ -433,6 +474,8 @@ async def main(question: str):
         new_refs = [(i, n) for i, n in zip(ids, names) if i not in tried]
         if not new_refs:
             break
+        if len(references) + len(new_refs) > TOP_K:
+            new_refs = new_refs[: TOP_K - len(references)]
         documents = []
         for doc_id, doc_name in new_refs:
             tried.add(doc_id)
