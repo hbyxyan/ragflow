@@ -132,7 +132,7 @@ async def extract_keywords_from_insights(
     base_keywords: List[str],
     limit: int = 5,
 ) -> List[str]:
-    """根据文档分析结果提取额外关键词"""
+    """根据文档分析结果提取额外关键词，使用思考模型"""
 
     if not insights or limit <= 0:
         return []
@@ -145,9 +145,9 @@ async def extract_keywords_from_insights(
         "关键词应聚焦于业务动作或场景，并尽量精简，不包含'规则'、'流程'等修饰词，例如'投保规则'应简化为'投保'。"
         "\n按重要性排序，用逗号分隔给出。\n文档分析结论：\n" + joined
     )
-    await rate_limiter_long.wait()
-    resp = await client_long.chat.completions.create(
-        model=OPENAI_LONG_MODEL,
+    await rate_limiter.wait()
+    resp = await client.chat.completions.create(
+        model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
     )
     text = resp.choices[0].message.content
@@ -204,6 +204,7 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
 
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
     example = {
+        "文档标题": "",
         "发布时间": "",
         "业务问题": "",
         "需求方案": {
@@ -214,13 +215,18 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
             "字段与界面": "",
             "通知与输出": "",
         },
+        "与问题相关的原文摘录": "",
     }
     prompt = (
-        "你是一名资深需求分析师，专注于提取业务问题（即该需求要解决的业务问题）和需求方案等关键内容。"
-        "请仔细分析下面的需求分析文档，针对问题'" + question + "'，精炼并逐项列出相关内容，"
-        "若文档未提及某项，请将对应字段设为空字符串。\n"
-        "请按照以下 JSON 结构回复：\n" + json.dumps(example, ensure_ascii=False) + "\n\n"
-        "文档内容：\n" + md_text
+        "你是一名资深需求分析师，请专注于分析下列需求文档中与业务问题“"
+        + question
+        + "”最直接相关的内容，提炼关键信息。"
+        "请只输出与该问题相关的业务问题与需求方案内容，其它字段如无信息可留空。"
+        "并在'与问题相关的原文摘录'字段摘录最关键的原文或段落，便于后续引用。\n"
+        "请按照以下 JSON 结构回复：\n"
+        + json.dumps(example, ensure_ascii=False)
+        + "\n\n文档内容：\n"
+        + md_text
     )
     tokens = count_tokens(prompt)
     # 根据输入 token 数量决定使用常规模型还是长上下文模型
@@ -244,6 +250,8 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
         data["发布时间"] = m.group(1)
     else:
         data["发布时间"] = ""
+    if "文档标题" not in data or not data["文档标题"]:
+        data["文档标题"] = filename
     logging.info("[LLM] 分析结果: %s", data)
     return data
 
@@ -296,15 +304,11 @@ async def compose_report(
         "| --- | --- | --- | --- |  \n"
         "(请根据文档内容按编号列出，缺失信息留空)\n\n"
         "*注：如业务问题或方案要点无内容则留空。*\n\n"
-        "## 四、主要差异与共性分析  \n"
-        "请分别对以下要素进行横向归纳和对比。\n"
-        "- **触发方式**  \n"
-        "- **处理流程**  \n"
-        "- **系统规则**  \n"
-        "- **字段与界面**  \n"
-        "- **通知与输出**  \n\n"
-        "## 五、分析结论与建议  \n"
-        "请根据以上内容，简要归纳整体趋势、差异、潜在冲突和可行的改进建议。\n\n"
+        "## 四、相关内容分析  \n"
+        "请优先按如下要素（如有）：触发方式、处理流程、系统规则、字段与界面、通知与输出，做结构化归纳。\n"
+        "如无结构化内容，可自由梳理所有与问题直接相关的分析和原文片段。\n\n"
+        "## 五、现状总结  \n"
+        f"请综合上文内容，简明归纳目前关于“{question}”的系统现状、业务做法或得出的结论。如有争议点或不一致，也请注明。\n\n"
         "请在正文中使用形如[^1]的标注引用文档，编号与文档清单一致。\n\n"
         f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n"
     )
