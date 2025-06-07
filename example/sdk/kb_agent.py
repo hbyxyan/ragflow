@@ -305,8 +305,7 @@ async def compose_report(
         "- **通知与输出**  \n\n"
         "## 五、分析结论与建议  \n"
         "请根据以上内容，简要归纳整体趋势、差异、潜在冲突和可行的改进建议。\n\n"
-        "## 六、引用文档\n"
-        "(请在此列出文档清单，并与正文标注的编号一致)\n\n"
+        "请在正文中使用形如[^1]的标注引用文档，编号与文档清单一致。\n\n"
         f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n"
     )
 
@@ -329,6 +328,8 @@ async def compose_report(
         max_tokens=max_tokens,
     )
     summary_md = resp.choices[0].message.content.strip()
+    # 移除模型生成内容中的引用文档列表，避免与脚本生成的部分重复
+    summary_md = re.sub(r"## 六、引用文档.*", "", summary_md, flags=re.S).rstrip()
 
     title_prompt = (
         f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，"
@@ -350,7 +351,9 @@ async def compose_report(
             doc_lines.append(f"[^{i}]: {name}（{pub}）")
         else:
             doc_lines.append(f"[^{i}]: {name}")
-    report = f"# 标题：{title}\n\n{body}\n\n## 六、引用文档\n" + "\n".join(doc_lines)
+    report = (
+        f"# 标题：{title}\n\n{body}\n\n## 六、引用文档\n" + "\n".join(doc_lines) + "\n"
+    )
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list))
     return report, title
 
