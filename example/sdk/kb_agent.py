@@ -124,7 +124,8 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     prompt = (
         f"你是一个需求分析助理，请从下面的问题中提取不超过{limit}个核心关键词。"
         "关键词应聚焦于业务动作或场景，并尽量精简，不包含'规则'、'流程'等修饰词。"
-        "例如：'投保规则'应简化为'投保'。关键词间用逗号分隔。\n问题：" + question
+        "请仅以 JSON 数组返回，不要添加任何解释。"
+        "例如：[\"投保\", \"核保\"]\n问题：" + question
     )
     await rate_limiter_long.wait()
     tokens_prompt = count_tokens(prompt)
@@ -137,10 +138,15 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     TOKENS_IN += tokens_prompt
     TOKENS_OUT += tokens_resp
     MODELS_USED.add(OPENAI_LONG_MODEL)
-    text = resp.choices[0].message.content
+    text = resp.choices[0].message.content.strip()
     logging.info("[LLM] 关键词提取结果: %s", text)
-    keywords = re.split(r"[,\s]+", text.strip())
-    keywords = [k for k in keywords if k][:limit]
+    try:
+        keywords = json.loads(text)
+        if not isinstance(keywords, list):
+            raise ValueError
+    except Exception:
+        keywords = [k for k in re.split(r"[,\s]+", text) if k]
+    keywords = keywords[:limit]
     logging.info("[LLM] 解析后的关键词: %s", keywords)
     return keywords
 
@@ -162,7 +168,7 @@ async def extract_keywords_from_insights(
         f"你是需求分析助理，已提取的关键词有：{','.join(base_keywords)}。"
         f"根据下面的文档分析结论和问题'{question}'，补充不超过{limit}个新的与问题解答可能相关的关键词。"
         "关键词应聚焦于业务动作或场景，并尽量精简，不包含'规则'、'流程'等修饰词，例如'投保规则'应简化为'投保'。"
-        "\n按重要性排序，用逗号分隔给出。\n文档分析结论：\n" + joined
+        "请仅以 JSON 数组返回，不要添加解释，格式示例：[\"核保\", \"退保\"]。\n文档分析结论:\n" + joined
     )
     await rate_limiter.wait()
     tokens_prompt = count_tokens(prompt)
@@ -175,9 +181,14 @@ async def extract_keywords_from_insights(
     TOKENS_IN += tokens_prompt
     TOKENS_OUT += tokens_resp
     MODELS_USED.add(OPENAI_MODEL)
-    text = resp.choices[0].message.content
+    text = resp.choices[0].message.content.strip()
     logging.info("[LLM] 追加关键词提取结果: %s", text)
-    kws = [k.strip() for k in re.split(r"[,\s]+", text) if k.strip()]
+    try:
+        kws = json.loads(text)
+        if not isinstance(kws, list):
+            raise ValueError
+    except Exception:
+        kws = [k.strip() for k in re.split(r"[,\s]+", text) if k.strip()]
     result = []
     for k in kws:
         if k not in base_keywords and k not in result:
