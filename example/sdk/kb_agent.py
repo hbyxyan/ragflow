@@ -84,6 +84,12 @@ class RateLimiter:
 rate_limiter = RateLimiter(1.5)
 rate_limiter_long = RateLimiter(1.5)
 
+# 全局统计信息：累计 tokens、使用的模型及开始时间
+TOKENS_IN = 0
+TOKENS_OUT = 0
+MODELS_USED: set[str] = set()
+START_TIME = time.time()
+
 
 def count_tokens(text: str) -> int:
     """统计文本的 token 数量，用于判断是否超出模型上下文"""
@@ -114,10 +120,16 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
         "例如：'投保规则'应简化为'投保'。关键词间用逗号分隔。\n问题：" + question
     )
     await rate_limiter_long.wait()
+    tokens_prompt = count_tokens(prompt)
     resp = await client_long.chat.completions.create(
         model=OPENAI_LONG_MODEL,
         messages=[{"role": "user", "content": prompt}],
     )
+    tokens_resp = count_tokens(resp.choices[0].message.content)
+    global TOKENS_IN, TOKENS_OUT
+    TOKENS_IN += tokens_prompt
+    TOKENS_OUT += tokens_resp
+    MODELS_USED.add(OPENAI_LONG_MODEL)
     text = resp.choices[0].message.content
     logging.info("[LLM] 关键词提取结果: %s", text)
     keywords = re.split(r"[,\s]+", text.strip())
@@ -146,10 +158,16 @@ async def extract_keywords_from_insights(
         "\n按重要性排序，用逗号分隔给出。\n文档分析结论：\n" + joined
     )
     await rate_limiter.wait()
+    tokens_prompt = count_tokens(prompt)
     resp = await client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
     )
+    tokens_resp = count_tokens(resp.choices[0].message.content)
+    global TOKENS_IN, TOKENS_OUT
+    TOKENS_IN += tokens_prompt
+    TOKENS_OUT += tokens_resp
+    MODELS_USED.add(OPENAI_MODEL)
     text = resp.choices[0].message.content
     logging.info("[LLM] 追加关键词提取结果: %s", text)
     kws = [k.strip() for k in re.split(r"[,\s]+", text) if k.strip()]
@@ -242,6 +260,11 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
     )
+    tokens_resp = count_tokens(resp.choices[0].message.content)
+    global TOKENS_IN, TOKENS_OUT
+    TOKENS_IN += tokens
+    TOKENS_OUT += tokens_resp
+    MODELS_USED.add(model)
     result = resp.choices[0].message.content
     data = parse_json_from_text(result)
     # 从文件名中解析发布时间，如 20181108发布_JK005-1234_xxx.docx
@@ -280,6 +303,10 @@ async def compose_report(
                     return True
             return False
 
+        plan = insight.get("需求方案", {}) if isinstance(insight, dict) else {}
+        if isinstance(plan, dict) and all(not str(v).strip() for v in plan.values()):
+            logging.info("需求方案为空，跳过文档 %s", name)
+            continue
         if not has_value(insight):
             continue
 
@@ -331,6 +358,11 @@ async def compose_report(
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
     )
+    tokens_resp = count_tokens(resp.choices[0].message.content)
+    global TOKENS_IN, TOKENS_OUT
+    TOKENS_IN += tokens
+    TOKENS_OUT += tokens_resp
+    MODELS_USED.add(model)
     summary_md = resp.choices[0].message.content.strip()
     # 移除模型生成内容中的引用文档列表，避免与脚本生成的部分重复
     summary_md = re.sub(r"## 六、引用文档.*", "", summary_md, flags=re.S).rstrip()
@@ -340,11 +372,16 @@ async def compose_report(
         f"切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{summary_md}”"
     )
     await limiter.wait()
+    tokens_prompt2 = count_tokens(title_prompt)
     resp = await cli.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": title_prompt}],
         max_tokens=64,
     )
+    tokens_resp2 = count_tokens(resp.choices[0].message.content)
+    TOKENS_IN += tokens_prompt2
+    TOKENS_OUT += tokens_resp2
+    MODELS_USED.add(model)
     title = resp.choices[0].message.content.strip()
 
     body = summary_md
@@ -355,8 +392,17 @@ async def compose_report(
             doc_lines.append(f"[^{i}]: {name}（{pub}）")
         else:
             doc_lines.append(f"[^{i}]: {name}")
+    end_time_str = time.strftime("%Y-%m-%d %H:%M")
+    duration = int(time.time() - START_TIME)
+    mins, secs = divmod(duration, 60)
+    meta = (
+        f"调查时间：{end_time_str}\n"
+        f"耗时：{mins}分{secs}秒\n"
+        f"tokens: in:{TOKENS_IN} out:{TOKENS_OUT}\n"
+        f"模型：{','.join(MODELS_USED)}\n"
+    )
     report = (
-        f"# 标题：{title}\n\n{body}\n\n## 六、引用文档\n" + "\n".join(doc_lines) + "\n"
+        f"# 标题：{title}\n\n{meta}\n{body}\n\n## 六、引用文档\n" + "\n".join(doc_lines) + "\n"
     )
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list))
     return report, title
