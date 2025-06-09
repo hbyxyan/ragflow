@@ -400,45 +400,51 @@ async def compose_report(
 
     batch_summaries = await asyncio.gather(*batch_tasks)
 
-    final_context = "\n\n".join(batch_summaries)
-    logging.info("全部批次汇总内容:\n%s", final_context)
-    final_prompt = (
-        f"你是需求分析领域的专家，请基于下列分批汇总内容，针对问题‘{question}’生成最终调研报告，"
-        "不得添加与问题无关的说明。对所有批次内容再次归并，避免跨批次要点重复；若发现争议或版本差异，请汇总表述并用脚注标注所有相关来源。请严格遵循下列 Markdown 结构输出：\n\n"
-        "## 一、问题分析  \n"
-        "请基于用户的问题，简要描述本次调研关注的业务场景、核心背景或问题缘由。如问题本身已包含场景，可直接转述。\n\n"
-        "## 二、调研目标  \n"
-        "- 汇总历史文档中与“{业务问题}”相关的内容  \n"
-        "- 分析差异，梳理现行规则  \n\n"
-        "## 三、主要信息摘录  \n"
-        "| 来源 | 发布时间 | 业务问题 | 摘要/方案要点 |  \n"
-        "| --- | --- | --- | --- |  \n"
-        "(请根据文档内容按编号列出，缺失信息留空)\n\n"
-        "*注：如业务问题或方案要点无内容则留空。*\n\n"
-        "## 四、相关内容分析  \n"
-        "请优先按如下要素（如有）：触发方式、处理流程、系统规则、字段与界面、通知与输出，做结构化归纳。\n"
-        "如无结构化内容，可自由梳理所有与问题直接相关的分析和原文片段。\n\n"
-        "## 五、现状总结  \n"
-        f"请综合上文内容，简明归纳目前关于“{question}”的系统现状、业务做法或得出的结论。如有争议点或不一致，也请注明。\n\n"
-        "请在正文中使用形如[^1]的标注引用文档，编号与文档清单一致。\n\n"
-        f"分批汇总内容：\n{final_context}\n"
-    )
-    tokens_final = count_tokens(final_prompt)
-    model = OPENAI_LONG_MODEL if tokens_final > 95000 else OPENAI_MODEL
-    use_long = model == OPENAI_LONG_MODEL
-    max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-    logging.info(
-        "[LLM] 最终汇总使用模型 %s，输入 %d tokens，回复上限 %d",
-        model,
-        tokens_final,
-        max_tokens,
-    )
-    body = await call_chat(
-        model=model,
-        messages=[{"role": "user", "content": final_prompt}],
-        max_tokens=max_tokens,
-        use_long=use_long,
-    )
+    if len(batch_summaries) == 1:
+        # 只有一个批次，直接使用该批次汇总内容作为最终报告主体
+        body = batch_summaries[0]
+        model = OPENAI_MODEL
+        use_long = False
+    else:
+        final_context = "\n\n".join(batch_summaries)
+        logging.info("全部批次汇总内容:\n%s", final_context)
+        final_prompt = (
+            f"你是需求分析领域的专家，请基于下列分批汇总内容，针对问题‘{question}’生成最终调研报告，"
+            "不得添加与问题无关的说明。对所有批次内容再次归并，避免跨批次要点重复；若发现争议或版本差异，请汇总表述并用脚注标注所有相关来源。请严格遵循下列 Markdown 结构输出：\n\n"
+            "## 一、问题分析  \n"
+            "请基于用户的问题，简要描述本次调研关注的业务场景、核心背景或问题缘由。如问题本身已包含场景，可直接转述。\n\n"
+            "## 二、调研目标  \n"
+            "- 汇总历史文档中与“{业务问题}”相关的内容  \n"
+            "- 分析差异，梳理现行规则  \n\n"
+            "## 三、主要信息摘录  \n"
+            "| 来源 | 发布时间 | 业务问题 | 摘要/方案要点 |  \n"
+            "| --- | --- | --- | --- |  \n"
+            "(请根据文档内容按编号列出，缺失信息留空)\n\n"
+            "*注：如业务问题或方案要点无内容则留空。*\n\n"
+            "## 四、相关内容分析  \n"
+            "请优先按如下要素（如有）：触发方式、处理流程、系统规则、字段与界面、通知与输出，做结构化归纳。\n"
+            "如无结构化内容，可自由梳理所有与问题直接相关的分析和原文片段。\n\n"
+            "## 五、现状总结  \n"
+            f"请综合上文内容，简明归纳目前关于“{question}”的系统现状、业务做法或得出的结论。如有争议点或不一致，也请注明。\n\n"
+            "请在正文中使用形如[^1]的标注引用文档，编号与文档清单一致。\n\n"
+            f"分批汇总内容：\n{final_context}\n"
+        )
+        tokens_final = count_tokens(final_prompt)
+        model = OPENAI_LONG_MODEL if tokens_final > 95000 else OPENAI_MODEL
+        use_long = model == OPENAI_LONG_MODEL
+        max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
+        logging.info(
+            "[LLM] 最终汇总使用模型 %s，输入 %d tokens，回复上限 %d",
+            model,
+            tokens_final,
+            max_tokens,
+        )
+        body = await call_chat(
+            model=model,
+            messages=[{"role": "user", "content": final_prompt}],
+            max_tokens=max_tokens,
+            use_long=use_long,
+        )
 
     title_prompt = f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{body}”"
     title = await call_chat(
