@@ -24,6 +24,7 @@ import re
 import logging
 import asyncio
 import json
+from pathlib import Path
 from typing import List, Tuple, Dict
 
 from openai import AsyncOpenAI
@@ -64,6 +65,9 @@ RERANK_BASE_URL = os.environ.get("RERANK_BASE_URL", "")
 
 # 检索结果返回的最大文档数
 TOP_K = int(os.environ.get("TOP_K", "100"))
+
+# 本地保存报告的目录
+REPORT_BASE_DIR = os.environ.get("REPORT_BASE_DIR", "reports")
 
 # 配置 OpenAI 客户端（异步）
 client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
@@ -301,7 +305,7 @@ async def compose_report(
     question: str,
     insights: List[Dict[str, str]],
     references: List[Tuple[str, str]],
-) -> tuple[str, str]:
+) -> tuple[str, str, List[str]]:
     """综合所有分析结果并生成 Markdown 报告，按批次处理"""
 
     def has_value(obj: Dict) -> bool:
@@ -454,7 +458,7 @@ async def compose_report(
     meta = f"调查时间：{end_time_str}\n耗时：{mins}分{secs}秒\ntokens: in:{TOKENS_IN} out:{TOKENS_OUT}\n模型：{','.join(MODELS_USED)}\n"
     report = f"# 标题：{title}\n\n{meta}\n{body}\n\n## 六、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
-    return report, title
+    return report, title, batch_summaries
 
 
 # ---------- 主流程 ----------
@@ -511,15 +515,34 @@ async def main(question: str):
         if not extra:
             break
 
-    report, title = await compose_report(question, insights, references)
+    report, title, batch_summaries = await compose_report(question, insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
     ts = time.strftime("%Y%m%d%H%M")
     safe_title = re.sub(r"[\\/:*?\"<>|]", "", title)
     filename = f"{ts}{safe_title}.md"
+    # 本地目录：以时间和标题区分
+    report_dir = os.path.join(REPORT_BASE_DIR, f"{ts}{safe_title}")
+    os.makedirs(report_dir, exist_ok=True)
     dataset = rag.list_datasets(id=KB2_ID)[0]
     dataset.upload_documents([{"display_name": filename, "blob": report.encode("utf-8")}])
+    # 保存最终报告
+    await asyncio.to_thread(
+        Path(os.path.join(report_dir, filename)).write_text,
+        report,
+        encoding="utf-8",
+    )
+    # 保存各批汇总
+    for idx, summary in enumerate(batch_summaries, start=1):
+        batch_name = f"batch_{idx}.md"
+        if batch_name == filename:
+            batch_name = f"batch_{idx}_summary.md"
+        await asyncio.to_thread(
+            Path(os.path.join(report_dir, batch_name)).write_text,
+            summary,
+            encoding="utf-8",
+        )
     logging.info("已上传报告 %s", filename)
 
     # 控制台输出报告内容
