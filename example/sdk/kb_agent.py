@@ -101,6 +101,15 @@ TOKENS_OUT = 0
 MODELS_USED: set[str] = set()
 START_TIME = time.time()
 
+# 默认需要归纳的业务要素
+DEFAULT_ELEMENT_KEYS = [
+    "触发方式",
+    "处理流程",
+    "系统规则",
+    "字段与界面",
+    "通知与输出",
+]
+
 
 async def call_chat(
     *,
@@ -277,6 +286,36 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     return keywords
 
 
+async def extract_extra_elements(question: str, base_elements: List[str], limit: int = 3) -> List[str]:
+    """Determine additional elements to summarize based on the question."""
+
+    prompt = (
+        "你是需求分析助理，请根据下列问题判断除了常规要素外还需要额外归纳哪些要素。\n"
+        f"常规要素包括：{','.join(base_elements)}。\n"
+        f"若问题中提及其他关键维度，请列出这些要素名称，不超过{limit}个。\n"
+        "若无额外要素，请返回空数组。仅以 JSON 数组返回，不要添加解释。\n"
+        "问题：" + question
+    )
+    text = await call_chat(
+        model=OPENAI_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    try:
+        elems = json.loads(text)
+        if not isinstance(elems, list):
+            raise ValueError
+    except Exception:
+        elems = [x.strip() for x in re.split(r"[,\s]+", text) if x.strip()]
+    extra = []
+    for e in elems:
+        if e not in base_elements and e not in extra:
+            extra.append(e)
+        if len(extra) >= limit:
+            break
+    logging.info("[LLM] 解析出的额外要素: %s", extra)
+    return extra
+
+
 async def extract_keywords_from_insights(
     insights: List[Dict[str, str]],
     question: str,
@@ -354,22 +393,29 @@ def download_and_convert(rag: RAGFlow, dataset_id: str, doc_id: str, fallback_na
         return "", fallback_name
 
 
-async def analyze_document(question: str, md_text: str, filename: str) -> Dict[str, str]:
+async def analyze_document(
+    question: str,
+    md_text: str,
+    filename: str,
+    element_keys: List[str] | None = None,
+) -> Dict[str, str]:
     """分析单个 Markdown 文档并以结构化 JSON 返回结果"""
 
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
+    if element_keys is None:
+        element_keys = DEFAULT_ELEMENT_KEYS
+
+    plan_fields = {k: "" for k in element_keys}
+    plan_fields.update(
+        {
+            "参与角色": "",
+        }
+    )
     example = {
         "文档标题": "",
         "发布时间": "",
         "业务问题": "",
-        "需求方案": {
-            "触发方式": "",
-            "参与角色": "",
-            "处理流程": "",
-            "系统规则": "",
-            "字段与界面": "",
-            "通知与输出": "",
-        },
+        "需求方案": plan_fields,
         "与问题相关的原文摘录": "",
     }
     prompt = (
@@ -377,6 +423,7 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
         "请只输出与该问题相关的业务问题与需求方案内容，其它字段如无信息可留空。"
         "如不确定与问题关联性，请先保留该内容，由后续批量归纳时判断其价值。"
         "并在'与问题相关的原文摘录'字段摘录最关键的原文或段落，便于后续引用。\n"
+        f"需求方案的要素包括：{','.join(element_keys + ['参与角色'])}。\n"
         "请按照以下 JSON 结构回复：\n" + json.dumps(example, ensure_ascii=False) + "\n\n文档内容：\n" + md_text
     )
     tokens = count_tokens(prompt)
@@ -408,6 +455,7 @@ async def compose_report(
     question: str,
     insights: List[Dict[str, str]],
     references: List[Tuple[str, str]],
+    element_keys: List[str] | None = None,
 ) -> tuple[str, str, Dict[str, str]]:
     """综合所有分析结果并生成 Markdown 报告"""
 
@@ -434,8 +482,10 @@ async def compose_report(
         docs.append((idx, name, pub, insight))
         idx += 1
 
+    if element_keys is None:
+        element_keys = DEFAULT_ELEMENT_KEYS
+
     doc_list_full: List[Tuple[int, str, str]] = []
-    element_keys = ["触发方式", "处理流程", "系统规则", "字段与界面", "通知与输出"]
     elements: Dict[str, List[Tuple[int, str]]] = {k: [] for k in element_keys}
 
     for i, name, pub, insight in docs:
@@ -534,6 +584,8 @@ async def main(question: str):
     # 初始化 RAGFlow 客户端并提取初始关键词
     rag = RAGFlow(api_key=RAGFLOW_API_KEY, base_url=RAGFLOW_HOST)
     keywords = await extract_keywords(question)
+    extra_elements = await extract_extra_elements(question, DEFAULT_ELEMENT_KEYS)
+    element_keys = DEFAULT_ELEMENT_KEYS + [e for e in extra_elements if e not in DEFAULT_ELEMENT_KEYS]
 
     # Step2：在知识库1中循环检索
     logging.info("开始在知识库1中检索")
@@ -560,7 +612,7 @@ async def main(question: str):
 
         async def sem_analyze(md: str, name: str):
             async with sem:
-                return await analyze_document(question, md, name)
+                return await analyze_document(question, md, name, element_keys)
 
         tasks = [sem_analyze(md, name) for _, name, md in documents]
         results = await asyncio.gather(*tasks)
@@ -576,7 +628,7 @@ async def main(question: str):
         if not extra:
             break
 
-    report, title, element_summaries = await compose_report(question, insights, references)
+    report, title, element_summaries = await compose_report(question, insights, references, element_keys)
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
