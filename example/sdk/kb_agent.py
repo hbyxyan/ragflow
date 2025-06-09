@@ -98,6 +98,32 @@ MODELS_USED: set[str] = set()
 START_TIME = time.time()
 
 
+async def call_chat(
+    *,
+    model: str,
+    messages: List[Dict[str, str]],
+    max_tokens: int | None = None,
+    use_long: bool = False,
+) -> str:
+    """统一的 LLM 调用，负责限流及统计"""
+
+    cli = client_long if use_long else client
+    limiter = rate_limiter_long if use_long else rate_limiter
+    await limiter.wait()
+    tokens_prompt = sum(count_tokens(m.get("content", "")) for m in messages)
+    resp = await cli.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+    )
+    tokens_resp = count_tokens(resp.choices[0].message.content)
+    global TOKENS_IN, TOKENS_OUT
+    TOKENS_IN += tokens_prompt
+    TOKENS_OUT += tokens_resp
+    MODELS_USED.add(model)
+    return resp.choices[0].message.content.strip()
+
+
 def count_tokens(text: str) -> int:
     """统计文本的 token 数量，用于判断是否超出模型上下文"""
     return len(encoding.encode(text))
@@ -125,20 +151,13 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
         f"你是一个需求分析助理，请从下面的问题中提取不超过{limit}个核心关键词。"
         "关键词应聚焦于业务动作或场景，并尽量精简，不包含'规则'、'流程'等修饰词。"
         "请仅以 JSON 数组返回，不要添加任何解释。"
-        "例如：[\"投保\", \"核保\"]\n问题：" + question
+        '例如：["投保", "核保"]\n问题：' + question
     )
-    await rate_limiter_long.wait()
-    tokens_prompt = count_tokens(prompt)
-    resp = await client_long.chat.completions.create(
+    text = await call_chat(
         model=OPENAI_LONG_MODEL,
         messages=[{"role": "user", "content": prompt}],
+        use_long=True,
     )
-    tokens_resp = count_tokens(resp.choices[0].message.content)
-    global TOKENS_IN, TOKENS_OUT
-    TOKENS_IN += tokens_prompt
-    TOKENS_OUT += tokens_resp
-    MODELS_USED.add(OPENAI_LONG_MODEL)
-    text = resp.choices[0].message.content.strip()
     logging.info("[LLM] 关键词提取结果: %s", text)
     try:
         keywords = json.loads(text)
@@ -168,20 +187,12 @@ async def extract_keywords_from_insights(
         f"你是需求分析助理，已提取的关键词有：{','.join(base_keywords)}。"
         f"根据下面的文档分析结论和问题'{question}'，补充不超过{limit}个新的与问题解答可能相关的关键词。"
         "关键词应聚焦于业务动作或场景，并尽量精简，不包含'规则'、'流程'等修饰词，例如'投保规则'应简化为'投保'。"
-        "请仅以 JSON 数组返回，不要添加解释，格式示例：[\"核保\", \"退保\"]。\n文档分析结论:\n" + joined
+        '请仅以 JSON 数组返回，不要添加解释，格式示例：["核保", "退保"]。\n文档分析结论:\n' + joined
     )
-    await rate_limiter.wait()
-    tokens_prompt = count_tokens(prompt)
-    resp = await client.chat.completions.create(
+    text = await call_chat(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
     )
-    tokens_resp = count_tokens(resp.choices[0].message.content)
-    global TOKENS_IN, TOKENS_OUT
-    TOKENS_IN += tokens_prompt
-    TOKENS_OUT += tokens_resp
-    MODELS_USED.add(OPENAI_MODEL)
-    text = resp.choices[0].message.content.strip()
     logging.info("[LLM] 追加关键词提取结果: %s", text)
     try:
         kws = json.loads(text)
@@ -198,9 +209,7 @@ async def extract_keywords_from_insights(
     return result
 
 
-def retrieve_docs(
-    rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.3
-) -> Tuple[List[str], List[str]]:
+def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.3) -> Tuple[List[str], List[str]]:
     """检索知识库并返回相关文档的 ID 与名称"""
 
     logging.info("在知识库 %s 中检索，查询: %s", dataset_id, question)
@@ -257,15 +266,10 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
         "与问题相关的原文摘录": "",
     }
     prompt = (
-        "你是一名资深需求分析师，请专注于分析下列需求文档中与业务问题“"
-        + question
-        + "”最直接相关的内容，提炼关键信息。"
+        "你是一名资深需求分析师，请专注于分析下列需求文档中与业务问题“" + question + "”最直接相关的内容，提炼关键信息。"
         "请只输出与该问题相关的业务问题与需求方案内容，其它字段如无信息可留空。"
         "并在'与问题相关的原文摘录'字段摘录最关键的原文或段落，便于后续引用。\n"
-        "请按照以下 JSON 结构回复：\n"
-        + json.dumps(example, ensure_ascii=False)
-        + "\n\n文档内容：\n"
-        + md_text
+        "请按照以下 JSON 结构回复：\n" + json.dumps(example, ensure_ascii=False) + "\n\n文档内容：\n" + md_text
     )
     tokens = count_tokens(prompt)
     # 根据输入 token 数量决定使用常规模型还是长上下文模型
@@ -273,20 +277,12 @@ async def analyze_document(question: str, md_text: str, filename: str) -> Dict[s
     use_long = model == OPENAI_LONG_MODEL
     max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
     logging.info("[LLM] 使用模型 %s，输入 %d tokens，回复上限 %d", model, tokens, max_tokens)
-    cli = client_long if use_long else client
-    limiter = rate_limiter_long if use_long else rate_limiter
-    await limiter.wait()
-    resp = await cli.chat.completions.create(
+    result = await call_chat(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
+        use_long=use_long,
     )
-    tokens_resp = count_tokens(resp.choices[0].message.content)
-    global TOKENS_IN, TOKENS_OUT
-    TOKENS_IN += tokens
-    TOKENS_OUT += tokens_resp
-    MODELS_USED.add(model)
-    result = resp.choices[0].message.content
     data = parse_json_from_text(result)
     # 从文件名中解析发布时间，如 20181108发布_JK005-1234_xxx.docx
     m = re.search(r"(\d{8})", filename)
@@ -335,6 +331,7 @@ async def compose_report(
 
     batch_summaries: List[str] = []
     doc_list_full: List[Tuple[int, str, str]] = []
+
     async def summarize_batch(batch_docs: List[Tuple[int, str, str, Dict]]) -> str:
         context_lines = []
         doc_list = []
@@ -376,20 +373,12 @@ async def compose_report(
             tokens,
             max_tokens,
         )
-        cli = client_long if use_long else client
-        limiter = rate_limiter_long if use_long else rate_limiter
-        await limiter.wait()
-        resp = await cli.chat.completions.create(
+        summary_md = await call_chat(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
+            use_long=use_long,
         )
-        tokens_resp = count_tokens(resp.choices[0].message.content)
-        global TOKENS_IN, TOKENS_OUT
-        TOKENS_IN += tokens
-        TOKENS_OUT += tokens_resp
-        MODELS_USED.add(model)
-        summary_md = resp.choices[0].message.content.strip()
         summary_md = re.sub(r"## 六、引用文档.*", "", summary_md, flags=re.S).rstrip()
         # 移除可能的代码块标记，避免影响后续 Markdown 渲染
         summary_md = re.sub(r"^```\w*\n", "", summary_md)
@@ -399,7 +388,7 @@ async def compose_report(
 
     batch_tasks = []
     for start in range(0, len(docs), 20):
-        batch = docs[start:start + 20]
+        batch = docs[start : start + 20]
         doc_list_full.extend([(i, name, pub) for i, name, pub, _ in batch])
         batch_tasks.append(summarize_batch(batch))
 
@@ -438,35 +427,20 @@ async def compose_report(
         tokens_final,
         max_tokens,
     )
-    cli = client_long if use_long else client
-    limiter = rate_limiter_long if use_long else rate_limiter
-    await limiter.wait()
-    resp = await cli.chat.completions.create(
+    body = await call_chat(
         model=model,
         messages=[{"role": "user", "content": final_prompt}],
         max_tokens=max_tokens,
+        use_long=use_long,
     )
-    tokens_resp = count_tokens(resp.choices[0].message.content)
-    TOKENS_IN += tokens_final
-    TOKENS_OUT += tokens_resp
-    MODELS_USED.add(model)
-    body = resp.choices[0].message.content.strip()
 
-    title_prompt = (
-        f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{body}”"
-    )
-    await limiter.wait()
-    tokens_prompt2 = count_tokens(title_prompt)
-    resp = await cli.chat.completions.create(
+    title_prompt = f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{body}”"
+    title = await call_chat(
         model=model,
         messages=[{"role": "user", "content": title_prompt}],
         max_tokens=64,
+        use_long=use_long,
     )
-    tokens_resp2 = count_tokens(resp.choices[0].message.content)
-    TOKENS_IN += tokens_prompt2
-    TOKENS_OUT += tokens_resp2
-    MODELS_USED.add(model)
-    title = resp.choices[0].message.content.strip()
 
     doc_lines = []
     for i, name, _ in doc_list_full:
@@ -475,15 +449,8 @@ async def compose_report(
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
-    meta = (
-        f"调查时间：{end_time_str}\n"
-        f"耗时：{mins}分{secs}秒\n"
-        f"tokens: in:{TOKENS_IN} out:{TOKENS_OUT}\n"
-        f"模型：{','.join(MODELS_USED)}\n"
-    )
-    report = (
-        f"# 标题：{title}\n\n{meta}\n{body}\n\n## 六、引用文档\n" + "\n\n".join(doc_lines) + "\n"
-    )
+    meta = f"调查时间：{end_time_str}\n耗时：{mins}分{secs}秒\ntokens: in:{TOKENS_IN} out:{TOKENS_OUT}\n模型：{','.join(MODELS_USED)}\n"
+    report = f"# 标题：{title}\n\n{meta}\n{body}\n\n## 六、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
     return report, title
 
