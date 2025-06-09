@@ -159,6 +159,25 @@ def doc_has_content(insight: Dict[str, str]) -> bool:
     return bool(biz or snippet or any(str(v).strip() for v in plan_values))
 
 
+def wrap_details(label: str, content: str) -> str:
+    """Wrap content in a collapsible HTML details block."""
+
+    return f"<details><summary>{label}</summary>\n\n{content}\n</details>"
+
+
+def fold_snippet_section(text: str, limit: int = 8) -> str:
+    """Collapse the snippet section if it is too long."""
+
+    m = re.search(r"(#### 3\. 典型原文摘录\n)(.+)", text, flags=re.S)
+    if not m:
+        return text
+    header, rest = m.groups()
+    if len(rest.splitlines()) <= limit:
+        return text
+    folded = wrap_details("典型原文摘录", rest.strip())
+    return text[: m.start()] + header + folded
+
+
 async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
     """Recursively summarize a specific element across documents."""
 
@@ -169,11 +188,16 @@ async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
     async def summarize_once(block: List[str]) -> str:
         context = "\n".join(block)
         prompt = (
-            f"请将以下所有文档中“{element}”字段内容，做归纳总结：\n"
-            "- 归纳共性、差异，若有争议或不同做法，请分别列明并用脚注标注原始文档编号。\n"
-            "- 输出顺序：1）通用做法 2）分歧/争议 3）如有需要，列举典型原文片段（附文档编号）。\n"
-            "- 如内容太多，请优先聚焦关键信息，摘要内容即可。\n"
-            f"源内容列表：\n{context}"
+            f"请根据以下“{element}”字段内容，严格按照如下结构分条归纳：\n\n"
+            "#### 1. 通用做法\n"
+            "- 仅列本要素的主要共性做法。\n\n"
+            "#### 2. 分歧与争议\n"
+            "- 每条写明具体分歧/争议点，明确不同做法并标注涉及文档编号（如[^1][^4]）。\n\n"
+            "#### 3. 典型原文摘录\n"
+            "> 每条仅列一句关键原文，标注文档编号（如[^2]）。\n"
+            "> 如内容多，可只选最具代表性的2-3条。\n\n"
+            "回复格式务必严格与上方示例对齐，不要出现任何说明或多余结构。\n"
+            "字段内容如下（每条已标明文档编号）：\n\n" + context
         )
         tokens = count_tokens(prompt)
         model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
@@ -195,7 +219,7 @@ async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
             chunk = current[start : start + chunk_size]
             summaries.append(await summarize_once(chunk))
         current = summaries
-    return current[0]
+    return fold_snippet_section(current[0])
 
 
 async def extract_keywords(question: str, limit: int = 5) -> List[str]:
@@ -403,7 +427,14 @@ async def compose_report(
         element_summaries[key] = summary
 
     context_for_overall = "\n\n".join(f"{k}:\n{v}" for k, v in element_summaries.items() if v)
-    overall_prompt = f"请基于以下分类归纳内容，总结与问题“{question}”相关的整体共性做法和主要分歧，若存在争议或版本差异，请用脚注标注涉及的文档编号。\n内容:\n" + context_for_overall
+    overall_prompt = (
+        f"请基于以下各要素的分条归纳内容，总结与问题“{question}”相关的主要共性做法和关键分歧。输出顺序如下：\n"
+        "1. 共性做法（分点归纳，避免与下方分歧重复）\n"
+        "2. 主要分歧/争议（每条列举分歧主题、不同做法并标注涉及文档编号）\n"
+        "3. 如有必要，提出规范化建议（如统一规则、字段命名等）\n"
+        "仅按上述结构输出，不得添加其他说明或段落。所有文档编号用脚注标注。\n"
+        f"内容如下：\n{context_for_overall}"
+    )
     model = OPENAI_LONG_MODEL if count_tokens(overall_prompt) > 95000 else OPENAI_MODEL
     use_long = model == OPENAI_LONG_MODEL
     max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
@@ -415,19 +446,21 @@ async def compose_report(
     )
 
     body_lines = [
-        "## 一、问题分析/调研目标",
+        "## 一、调研背景与目标",
         question,
         "",
-        "## 二、整体共性&差异摘要",
+        "## 二、主要结论与摘要",
         overall_summary,
         "",
-        "## 三、分要素分类归纳",
+        "## 三、要素逐项归纳",
     ]
+    idx_elem = 1
     for key in element_keys:
         summary = element_summaries.get(key, "")
         if summary:
-            body_lines.append(f"### {key}")
+            body_lines.append(f"### 3.{idx_elem} {key}")
             body_lines.append(summary)
+            idx_elem += 1
     body = "\n".join(body_lines)
 
     title_prompt = f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n摘要：“{overall_summary}”"
@@ -441,8 +474,8 @@ async def compose_report(
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
-    meta = f"调查时间：{end_time_str}\n耗时：{mins}分{secs}秒\ntokens: in:{TOKENS_IN} out:{TOKENS_OUT}\n模型：{','.join(MODELS_USED)}\n"
-    report = f"# 标题：{title}\n\n{meta}\n{body}\n\n## 六、引用文档\n" + "\n\n".join(doc_lines) + "\n"
+    meta = f"调查时间：{end_time_str}  \n耗时：{mins}分{secs}秒  \ntokens: in:{TOKENS_IN} out:{TOKENS_OUT}  \n模型：{','.join(MODELS_USED)}  \n"
+    report = f"# {title}\n\n{meta}\n\n{body}\n\n## 四、引用文档\n" + "\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
     return report, title, element_summaries
 
