@@ -147,6 +147,18 @@ def parse_json_from_text(text: str) -> Dict[str, str]:
 # ---------- 工具函数 ----------
 
 
+def doc_has_content(insight: Dict[str, str]) -> bool:
+    """判断文档分析结果是否包含有价值的内容"""
+
+    if not isinstance(insight, dict):
+        return False
+    biz = str(insight.get("业务问题", "")).strip()
+    snippet = str(insight.get("与问题相关的原文摘录", "")).strip()
+    plan = insight.get("需求方案", {})
+    plan_values = plan.values() if isinstance(plan, dict) else []
+    return bool(biz or snippet or any(str(v).strip() for v in plan_values))
+
+
 async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
     """Recursively summarize a specific element across documents."""
 
@@ -363,11 +375,8 @@ async def compose_report(
     for (doc_id, name), insight in zip(references, insights):
         if not insight:
             continue
-        plan = insight.get("需求方案", {}) if isinstance(insight, dict) else {}
-        if isinstance(plan, dict) and all(not str(v).strip() for v in plan.values()):
-            logging.info("需求方案为空，跳过文档 %s", name)
-            continue
-        if not has_value(insight):
+        if not doc_has_content(insight):
+            logging.info("文档 %s 无有效内容，跳过", name)
             continue
         pub = insight.get("发布时间", "") if isinstance(insight, dict) else ""
         docs.append((idx, name, pub, insight))
@@ -388,8 +397,10 @@ async def compose_report(
                 elements[key].append((i, text))
 
     element_summaries: Dict[str, str] = {}
-    for key, items in elements.items():
-        element_summaries[key] = await reduce_element(key, items)
+    tasks = [reduce_element(key, items) for key, items in elements.items()]
+    results = await asyncio.gather(*tasks)
+    for key, summary in zip(elements.keys(), results):
+        element_summaries[key] = summary
 
     context_for_overall = "\n\n".join(f"{k}:\n{v}" for k, v in element_summaries.items() if v)
     overall_prompt = f"请基于以下分类归纳内容，总结与问题“{question}”相关的整体共性做法和主要分歧，若存在争议或版本差异，请用脚注标注涉及的文档编号。\n内容:\n" + context_for_overall
