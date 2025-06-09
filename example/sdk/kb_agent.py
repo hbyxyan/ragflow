@@ -25,7 +25,7 @@ import logging
 import asyncio
 import json
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import Dict, List, Tuple
 
 from openai import AsyncOpenAI
 from ragflow_sdk import RAGFlow
@@ -145,6 +145,45 @@ def parse_json_from_text(text: str) -> Dict[str, str]:
 
 
 # ---------- 工具函数 ----------
+
+
+async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
+    """Recursively summarize a specific element across documents."""
+
+    lines = [f"{i}. {text.strip()}" for i, text in items if text.strip()]
+    if not lines:
+        return ""
+
+    async def summarize_once(block: List[str]) -> str:
+        context = "\n".join(block)
+        prompt = (
+            f"请将以下所有文档中“{element}”字段内容，做归纳总结：\n"
+            "- 归纳共性、差异，若有争议或不同做法，请分别列明并用脚注标注原始文档编号。\n"
+            "- 输出顺序：1）通用做法 2）分歧/争议 3）如有需要，列举典型原文片段（附文档编号）。\n"
+            "- 如内容太多，请优先聚焦关键信息，摘要内容即可。\n"
+            f"源内容列表：\n{context}"
+        )
+        tokens = count_tokens(prompt)
+        model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
+        use_long = model == OPENAI_LONG_MODEL
+        max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
+        logging.info("[LLM] 汇总 %s，模型 %s，输入 %d tokens", element, model, tokens)
+        return await call_chat(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            use_long=use_long,
+        )
+
+    chunk_size = 20
+    current = lines
+    while len(current) > 1:
+        summaries: List[str] = []
+        for start in range(0, len(current), chunk_size):
+            chunk = current[start : start + chunk_size]
+            summaries.append(await summarize_once(chunk))
+        current = summaries
+    return current[0]
 
 
 async def extract_keywords(question: str, limit: int = 5) -> List[str]:
@@ -305,8 +344,8 @@ async def compose_report(
     question: str,
     insights: List[Dict[str, str]],
     references: List[Tuple[str, str]],
-) -> tuple[str, str, List[str]]:
-    """综合所有分析结果并生成 Markdown 报告，按批次处理"""
+) -> tuple[str, str, Dict[str, str]]:
+    """综合所有分析结果并生成 Markdown 报告"""
 
     def has_value(obj: Dict) -> bool:
         for v in obj.values():
@@ -334,137 +373,67 @@ async def compose_report(
         docs.append((idx, name, pub, insight))
         idx += 1
 
-    batch_summaries: List[str] = []
     doc_list_full: List[Tuple[int, str, str]] = []
+    element_keys = ["触发方式", "处理流程", "系统规则", "字段与界面", "通知与输出"]
+    elements: Dict[str, List[Tuple[int, str]]] = {k: [] for k in element_keys}
 
-    async def summarize_batch(batch_docs: List[Tuple[int, str, str, Dict]]) -> str:
-        context_lines = []
-        doc_list = []
-        for i, name, pub, insight in batch_docs:
-            context_lines.append(f"{i}. {name}: " + json.dumps(insight, ensure_ascii=False))
-            doc_list.append((i, name, pub))
-        context = "\n".join(context_lines)
-        doc_list_str = "\n".join(f"{i}. {name}" for i, name, _ in doc_list)
+    for i, name, pub, insight in docs:
+        doc_list_full.append((i, name, pub))
+        plan = insight.get("需求方案", {})
+        if not isinstance(plan, dict):
+            continue
+        for key in element_keys:
+            text = str(plan.get(key, "")).strip()
+            if text:
+                elements[key].append((i, text))
 
-        prompt = (
-            f"你是需求分析领域的专家，请基于以下文档内容，针对问题‘{question}’撰写调研报告，"
-            "不得添加与问题无关的说明。请严格遵循下列 Markdown 结构输出：\n\n"
-            "## 一、问题分析  \n"
-            "请基于用户的问题，简要描述本次调研关注的业务场景、核心背景或问题缘由。如问题本身已包含场景，可直接转述。\n\n"
-            "## 二、调研目标  \n"
-            "- 汇总历史文档中与“{业务问题}”相关的内容  \n"
-            "- 分析差异，梳理现行规则  \n\n"
-            "## 三、主要信息摘录  \n"
-            "| 来源 | 发布时间 | 业务问题 | 摘要/方案要点 |  \n"
-            "| --- | --- | --- | --- |  \n"
-            "(请根据文档内容按编号列出，缺失信息留空)\n\n"
-            "*注：如业务问题或方案要点无内容则留空。*\n\n"
-            "## 四、相关内容分析  \n"
-            "请优先按如下要素（如有）：触发方式、处理流程、系统规则、字段与界面、通知与输出，做结构化归纳。\n"
-            "如无结构化内容，可自由梳理所有与问题直接相关的分析和原文片段。\n"
-            "如有重复或高度相似的要点，请自动合并，不要重复罗列。\n\n"
-            "## 五、现状总结  \n"
-            f"请综合上文内容，简明归纳目前关于“{question}”的系统现状、业务做法或得出的结论。如有争议点或不一致，也请注明。\n\n"
-            "请在正文中使用形如[^1]的标注引用文档，编号与文档清单一致。\n\n"
-            f"文档内容：\n{context}\n\n文档清单：\n{doc_list_str}\n\n"
-        )
+    element_summaries: Dict[str, str] = {}
+    for key, items in elements.items():
+        element_summaries[key] = await reduce_element(key, items)
 
-        tokens = count_tokens(prompt)
-        model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
-        use_long = model == OPENAI_LONG_MODEL
-        max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-        logging.info(
-            "[LLM] 分批汇总使用模型 %s，输入 %d tokens，回复上限 %d",
-            model,
-            tokens,
-            max_tokens,
-        )
-        summary_md = await call_chat(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-            use_long=use_long,
-        )
-        summary_md = re.sub(r"## 六、引用文档.*", "", summary_md, flags=re.S).rstrip()
-        # 移除可能的代码块标记，避免影响后续 Markdown 渲染
-        summary_md = re.sub(r"^```\w*\n", "", summary_md)
-        summary_md = re.sub(r"```\s*$", "", summary_md)
-        logging.info("分批汇总结果:\n%s", summary_md)
-        return summary_md
-
-    batch_tasks = []
-    for start in range(0, len(docs), 20):
-        batch = docs[start : start + 20]
-        doc_list_full.extend([(i, name, pub) for i, name, pub, _ in batch])
-        batch_tasks.append(summarize_batch(batch))
-
-    batch_summaries = await asyncio.gather(*batch_tasks)
-
-    if len(batch_summaries) == 1:
-        # 只有一个批次，直接使用该批次汇总内容作为最终报告主体
-        body = batch_summaries[0]
-        model = OPENAI_MODEL
-        use_long = False
-    else:
-        final_context = "\n\n".join(batch_summaries)
-        logging.info("全部批次汇总内容:\n%s", final_context)
-        final_prompt = (
-            f"你是需求分析领域的专家，请基于下列分批汇总内容，针对问题‘{question}’生成最终调研报告，"
-            "不得添加与问题无关的说明。对所有批次内容再次归并，避免跨批次要点重复；若发现争议或版本差异，请汇总表述并用脚注标注所有相关来源。请严格遵循下列 Markdown 结构输出：\n\n"
-            "## 一、问题分析  \n"
-            "请基于用户的问题，简要描述本次调研关注的业务场景、核心背景或问题缘由。如问题本身已包含场景，可直接转述。\n\n"
-            "## 二、调研目标  \n"
-            "- 汇总历史文档中与“{业务问题}”相关的内容  \n"
-            "- 分析差异，梳理现行规则  \n\n"
-            "## 三、主要信息摘录  \n"
-            "| 来源 | 发布时间 | 业务问题 | 摘要/方案要点 |  \n"
-            "| --- | --- | --- | --- |  \n"
-            "(请根据文档内容按编号列出，缺失信息留空)\n\n"
-            "*注：如业务问题或方案要点无内容则留空。*\n\n"
-            "## 四、相关内容分析  \n"
-            "请优先按如下要素（如有）：触发方式、处理流程、系统规则、字段与界面、通知与输出，做结构化归纳。\n"
-            "如无结构化内容，可自由梳理所有与问题直接相关的分析和原文片段。\n\n"
-            "## 五、现状总结  \n"
-            f"请综合上文内容，简明归纳目前关于“{question}”的系统现状、业务做法或得出的结论。如有争议点或不一致，也请注明。\n\n"
-            "请在正文中使用形如[^1]的标注引用文档，编号与文档清单一致。\n\n"
-            f"分批汇总内容：\n{final_context}\n"
-        )
-        tokens_final = count_tokens(final_prompt)
-        model = OPENAI_LONG_MODEL if tokens_final > 95000 else OPENAI_MODEL
-        use_long = model == OPENAI_LONG_MODEL
-        max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-        logging.info(
-            "[LLM] 最终汇总使用模型 %s，输入 %d tokens，回复上限 %d",
-            model,
-            tokens_final,
-            max_tokens,
-        )
-        body = await call_chat(
-            model=model,
-            messages=[{"role": "user", "content": final_prompt}],
-            max_tokens=max_tokens,
-            use_long=use_long,
-        )
-
-    title_prompt = f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n文档：“{body}”"
-    title = await call_chat(
+    context_for_overall = "\n\n".join(f"{k}:\n{v}" for k, v in element_summaries.items() if v)
+    overall_prompt = f"请基于以下分类归纳内容，总结与问题“{question}”相关的整体共性做法和主要分歧，若存在争议或版本差异，请用脚注标注涉及的文档编号。\n内容:\n" + context_for_overall
+    model = OPENAI_LONG_MODEL if count_tokens(overall_prompt) > 95000 else OPENAI_MODEL
+    use_long = model == OPENAI_LONG_MODEL
+    max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
+    overall_summary = await call_chat(
         model=model,
-        messages=[{"role": "user", "content": title_prompt}],
-        max_tokens=64,
+        messages=[{"role": "user", "content": overall_prompt}],
+        max_tokens=max_tokens,
         use_long=use_long,
     )
 
-    doc_lines = []
-    for i, name, _ in doc_list_full:
-        # 文件名已包含时间信息，引用处无需重复
-        doc_lines.append(f"[^{i}]: {name}")
+    body_lines = [
+        "## 一、问题分析/调研目标",
+        question,
+        "",
+        "## 二、整体共性&差异摘要",
+        overall_summary,
+        "",
+        "## 三、分要素分类归纳",
+    ]
+    for key in element_keys:
+        summary = element_summaries.get(key, "")
+        if summary:
+            body_lines.append(f"### {key}")
+            body_lines.append(summary)
+    body = "\n".join(body_lines)
+
+    title_prompt = f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n摘要：“{overall_summary}”"
+    title = await call_chat(
+        model=OPENAI_MODEL,
+        messages=[{"role": "user", "content": title_prompt}],
+        max_tokens=64,
+    )
+
+    doc_lines = [f"[^{i}]: {name}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
     meta = f"调查时间：{end_time_str}\n耗时：{mins}分{secs}秒\ntokens: in:{TOKENS_IN} out:{TOKENS_OUT}\n模型：{','.join(MODELS_USED)}\n"
     report = f"# 标题：{title}\n\n{meta}\n{body}\n\n## 六、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
-    return report, title, batch_summaries
+    return report, title, element_summaries
 
 
 # ---------- 主流程 ----------
@@ -521,7 +490,7 @@ async def main(question: str):
         if not extra:
             break
 
-    report, title, batch_summaries = await compose_report(question, insights, references)
+    report, title, element_summaries = await compose_report(question, insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
@@ -539,11 +508,12 @@ async def main(question: str):
         report,
         encoding="utf-8",
     )
-    # 保存各批汇总
-    for idx, summary in enumerate(batch_summaries, start=1):
-        batch_name = f"batch_{idx}.md"
+    # 保存各要素汇总
+    for key, summary in element_summaries.items():
+        safe_key = re.sub(r"[\\/:*?\"<>|\s]", "_", key)
+        batch_name = f"{safe_key}.md"
         if batch_name == filename:
-            batch_name = f"batch_{idx}_summary.md"
+            batch_name = f"{safe_key}_summary.md"
         await asyncio.to_thread(
             Path(os.path.join(report_dir, batch_name)).write_text,
             summary,
