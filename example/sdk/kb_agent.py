@@ -55,6 +55,8 @@ OPENAI_LONG_BASE_URL = os.environ.get("OPENAI_LONG_BASE_URL", OPENAI_BASE_URL)
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "Pro/deepseek-ai/DeepSeek-R1")
 # 长文本分析模型使用千问的 qwen-long-latest，最大上下文约 10K，最大输出 8192
 OPENAI_LONG_MODEL = os.environ.get("OPENAI_LONG_MODEL", "Qwen/qwen-long-latest")
+# 可选的轻量模型，供无需复杂推理的任务使用
+OPENAI_BASIC_MODEL = os.environ.get("OPENAI_BASIC_MODEL", OPENAI_MODEL)
 # 回复长度限制，可通过环境变量自定义
 OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS", "2048"))
 OPENAI_LONG_MAX_TOKENS = int(os.environ.get("OPENAI_LONG_MAX_TOKENS", "8192"))
@@ -304,7 +306,11 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
 
 
 async def extract_extra_elements(question: str, base_elements: List[str], limit: int = 3) -> List[str]:
-    """Determine additional elements to summarize based on the question."""
+    """Determine additional elements to summarize based on the question.
+
+    This step uses a lightweight model to save costs, as complex reasoning is
+    unnecessary here.
+    """
 
     prompt = (
         "你是需求分析助理，请根据下列问题判断除了常规要素外还需要额外归纳哪些要素。\n"
@@ -314,7 +320,7 @@ async def extract_extra_elements(question: str, base_elements: List[str], limit:
         "问题：" + question
     )
     text = await call_chat(
-        model=OPENAI_MODEL,
+        model=OPENAI_BASIC_MODEL,
         messages=[{"role": "user", "content": prompt}],
     )
     try:
