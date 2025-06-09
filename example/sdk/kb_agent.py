@@ -95,11 +95,19 @@ class RateLimiter:
 rate_limiter = RateLimiter(1.5)
 rate_limiter_long = RateLimiter(1.5)
 
-# 全局统计信息：累计 tokens、使用的模型及开始时间
+# 全局统计信息：累计 tokens、使用的模型及开始时间和费用
 TOKENS_IN = 0
 TOKENS_OUT = 0
+TOTAL_COST = 0.0
 MODELS_USED: set[str] = set()
 START_TIME = time.time()
+
+# 各模型的费用配置，格式示例：
+# {"model_name": {"prompt": 0.001, "completion": 0.002}}
+try:
+    MODEL_PRICES = json.loads(os.environ.get("MODEL_PRICES", "{}"))
+except Exception:
+    MODEL_PRICES = {}
 
 # 默认需要归纳的业务要素
 DEFAULT_ELEMENT_KEYS = [
@@ -123,16 +131,25 @@ async def call_chat(
     cli = client_long if use_long else client
     limiter = rate_limiter_long if use_long else rate_limiter
     await limiter.wait()
-    tokens_prompt = sum(count_tokens(m.get("content", "")) for m in messages)
+    est_prompt_tokens = sum(count_tokens(m.get("content", "")) for m in messages)
     resp = await cli.chat.completions.create(
         model=model,
         messages=messages,
         max_tokens=max_tokens,
     )
-    tokens_resp = count_tokens(resp.choices[0].message.content)
-    global TOKENS_IN, TOKENS_OUT
+    usage = getattr(resp, "usage", None)
+    if usage:
+        tokens_prompt = usage.prompt_tokens or est_prompt_tokens
+        tokens_resp = usage.completion_tokens or count_tokens(resp.choices[0].message.content)
+    else:
+        tokens_prompt = est_prompt_tokens
+        tokens_resp = count_tokens(resp.choices[0].message.content)
+    global TOKENS_IN, TOKENS_OUT, TOTAL_COST
     TOKENS_IN += tokens_prompt
     TOKENS_OUT += tokens_resp
+    price = MODEL_PRICES.get(model, {})
+    TOTAL_COST += tokens_prompt / 1000 * float(price.get("prompt", 0))
+    TOTAL_COST += tokens_resp / 1000 * float(price.get("completion", 0))
     MODELS_USED.add(model)
     return resp.choices[0].message.content.strip()
 
@@ -566,7 +583,7 @@ async def compose_report(
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
-    meta = f"**调查时间**：{end_time_str}  \n**耗时**：{mins}分{secs}秒  \n**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n**模型**：{','.join(MODELS_USED)}\n---"
+    meta = f"**调查时间**：{end_time_str}  \n**耗时**：{mins}分{secs}秒  \n**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n**费用**：{TOTAL_COST:.4f}  \n**模型**：{','.join(MODELS_USED)}\n---"
     report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}\n\n## 四、引用文档\n" + "\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
     return report, title, element_summaries
