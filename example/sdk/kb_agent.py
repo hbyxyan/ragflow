@@ -128,6 +128,30 @@ async def call_chat(
     return resp.choices[0].message.content.strip()
 
 
+async def call_chat_checked(
+    *,
+    model: str,
+    messages: List[Dict[str, str]],
+    max_tokens: int | None = None,
+    use_long: bool = False,
+    patterns: List[str] | None = None,
+    retries: int = 2,
+) -> str:
+    """Call the model and retry if output doesn't match patterns."""
+
+    for attempt in range(retries + 1):
+        text = await call_chat(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            use_long=use_long,
+        )
+        if not patterns or all(re.search(p, text) for p in patterns):
+            return text
+        logging.warning("LLM output format mismatch, retrying %d/%d", attempt + 1, retries)
+    return text
+
+
 def count_tokens(text: str) -> int:
     """统计文本的 token 数量，用于判断是否超出模型上下文"""
     return len(encoding.encode(text))
@@ -165,15 +189,13 @@ def wrap_details(label: str, content: str) -> str:
     return f"<details><summary>{label}</summary>\n\n{content}\n</details>"
 
 
-def fold_snippet_section(text: str, limit: int = 8) -> str:
-    """Collapse the snippet section if it is too long."""
+def fold_snippet_section(text: str) -> str:
+    """Always collapse the snippet section using HTML details."""
 
     m = re.search(r"(#### 3\. 典型原文摘录\n)(.+)", text, flags=re.S)
     if not m:
         return text
     header, rest = m.groups()
-    if len(rest.splitlines()) <= limit:
-        return text
     folded = wrap_details("典型原文摘录", rest.strip())
     return text[: m.start()] + header + folded
 
@@ -204,11 +226,17 @@ async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
         use_long = model == OPENAI_LONG_MODEL
         max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
         logging.info("[LLM] 汇总 %s，模型 %s，输入 %d tokens", element, model, tokens)
-        return await call_chat(
+        patterns = [
+            r"#### 1\. 通用做法",
+            r"#### 2\. 分歧与争议",
+            r"#### 3\. 典型原文摘录",
+        ]
+        return await call_chat_checked(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
             use_long=use_long,
+            patterns=patterns,
         )
 
     chunk_size = 20
@@ -428,21 +456,34 @@ async def compose_report(
 
     context_for_overall = "\n\n".join(f"{k}:\n{v}" for k, v in element_summaries.items() if v)
     overall_prompt = (
-        f"请基于以下各要素的分条归纳内容，总结与问题“{question}”相关的主要共性做法和关键分歧。输出顺序如下：\n"
-        "1. 共性做法（分点归纳，避免与下方分歧重复）\n"
-        "2. 主要分歧/争议（每条列举分歧主题、不同做法并标注涉及文档编号）\n"
-        "3. 如有必要，提出规范化建议（如统一规则、字段命名等）\n"
+        f"请基于以下各要素的分条归纳内容，生成“主要结论与摘要”部分，严格使用如下结构：\n"
+        "#### 2.1 共性做法\n- 共性1...\n\n"
+        "#### 2.2 分歧与争议\n- 分歧1...\n\n"
+        "#### 2.3 规范化建议\n- 建议1...\n\n"
         "仅按上述结构输出，不得添加其他说明或段落。所有文档编号用脚注标注。\n"
         f"内容如下：\n{context_for_overall}"
     )
     model = OPENAI_LONG_MODEL if count_tokens(overall_prompt) > 95000 else OPENAI_MODEL
     use_long = model == OPENAI_LONG_MODEL
     max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-    overall_summary = await call_chat(
+    overall_patterns = [
+        r"#### 2\.1 共性做法",
+        r"#### 2\.2 分歧与争议",
+        r"#### 2\.3 规范化建议",
+    ]
+    overall_summary = await call_chat_checked(
         model=model,
         messages=[{"role": "user", "content": overall_prompt}],
         max_tokens=max_tokens,
         use_long=use_long,
+        patterns=overall_patterns,
+    )
+
+    summary_prompt = "请用不超过20个字概括下列内容的核心观点：\n" + overall_summary
+    short_summary = await call_chat(
+        model=OPENAI_MODEL,
+        messages=[{"role": "user", "content": summary_prompt}],
+        max_tokens=32,
     )
 
     body_lines = [
@@ -450,6 +491,7 @@ async def compose_report(
         question,
         "",
         "## 二、主要结论与摘要",
+        f"本报告核心观点：{short_summary}",
         overall_summary,
         "",
         "## 三、要素逐项归纳",
@@ -474,8 +516,8 @@ async def compose_report(
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
-    meta = f"调查时间：{end_time_str}  \n耗时：{mins}分{secs}秒  \ntokens: in:{TOKENS_IN} out:{TOKENS_OUT}  \n模型：{','.join(MODELS_USED)}  \n"
-    report = f"# {title}\n\n{meta}\n\n{body}\n\n## 四、引用文档\n" + "\n".join(doc_lines) + "\n"
+    meta = f"**调查时间**：{end_time_str}  \n**耗时**：{mins}分{secs}秒  \n**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n**模型**：{','.join(MODELS_USED)}\n---"
+    report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}\n\n## 四、引用文档\n" + "\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
     return report, title, element_summaries
 
