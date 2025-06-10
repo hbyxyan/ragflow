@@ -24,6 +24,8 @@ import re
 import logging
 import asyncio
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -753,6 +755,24 @@ async def main(question: str):
             encoding="utf-8",
         )
     logging.info("已上传报告 %s", filename)
+
+    # 使用 pandoc 转为 PDF 并立即打开
+    pdf_name = filename.rsplit(".", 1)[0] + ".pdf"
+    pdf_path = os.path.join(report_dir, pdf_name)
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["pandoc", os.path.join(report_dir, filename), "-o", pdf_path],
+            check=True,
+        )
+        if sys.platform.startswith("darwin"):
+            await asyncio.to_thread(subprocess.run, ["open", pdf_path])
+        elif os.name == "nt":
+            os.startfile(pdf_path)  # type: ignore[attr-defined]
+        else:
+            await asyncio.to_thread(subprocess.run, ["xdg-open", pdf_path])
+    except Exception as exc:
+        logging.error("PDF 生成或打开失败: %s", exc)
 
     # 控制台输出报告内容
     print(report)
