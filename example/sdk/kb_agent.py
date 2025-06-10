@@ -104,10 +104,17 @@ START_TIME = time.time()
 
 # 各模型的费用配置，格式示例：
 # {"model_name": {"prompt": 0.001, "completion": 0.002}}
+# 如果环境变量 ``MODEL_PRICES`` 未设置或解析失败，回退到以下默认值
+DEFAULT_MODEL_PRICES = {
+    "Pro/deepseek-ai/DeepSeek-R1": {"prompt": 0.004, "completion": 0.016},
+    "qwen-long-latest": {"prompt": 0.0005, "completion": 0.002},
+    "qwen3-235b-a22b": {"prompt": 0.002, "completion": 0.020},
+    "Qwen/Qwen3-235B-A22B": {"prompt": 0.0025, "completion": 0.010},
+}
 try:
-    MODEL_PRICES = json.loads(os.environ.get("MODEL_PRICES", "{}"))
+    MODEL_PRICES = json.loads(os.environ.get("MODEL_PRICES", json.dumps(DEFAULT_MODEL_PRICES)))
 except Exception:
-    MODEL_PRICES = {}
+    MODEL_PRICES = DEFAULT_MODEL_PRICES
 
 # 默认需要归纳的业务要素
 DEFAULT_ELEMENT_KEYS = [
@@ -577,7 +584,7 @@ async def compose_report(
     if m:
         overall_summary = m.group(1).strip()
 
-    summary_prompt = "请用不超过20个字概括下列内容的核心观点：\n" + overall_summary
+    summary_prompt = "请简明扼要的概括下列内容的核心观点。仅反馈核心观点，不解释说明任何与观点无关的内容。\n" + overall_summary
     short_summary = await call_chat(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": summary_prompt}],
