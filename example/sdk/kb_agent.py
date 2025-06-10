@@ -596,15 +596,19 @@ async def compose_report(
     if m:
         overall_summary = m.group(1).strip()
 
-    summary_prompt = "请简明扼要的概括下列内容的核心观点。仅反馈核心观点，不解释说明任何与观点无关的内容。\n" + overall_summary
-    short_summary = await call_chat(
-        model=OPENAI_MODEL,
-        messages=[{"role": "user", "content": summary_prompt}],
-        max_tokens=32,
-    )
-    short_summary = short_summary.strip().splitlines()[0]
-    short_summary = re.sub(r"^#+", "", short_summary).strip()
-    short_summary = re.sub(r"^本报告核心观点[:：\s]*", "", short_summary)
+    summary_prompt = "请简明扼要地概括下列内容的核心观点，仅反馈观点，不要复述原文或添加解释。\n内容：\n" + overall_summary
+
+    for _ in range(2):
+        short_summary = await call_chat(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": summary_prompt}],
+        )
+        short_summary = short_summary.strip().splitlines()[0]
+        short_summary = re.sub(r"^#+", "", short_summary).strip()
+        short_summary = re.sub(r"^本报告核心观点[:：\s]*", "", short_summary)
+        if short_summary not in overall_summary:
+            break
+        summary_prompt = "请使用不同措辞进一步提炼以下内容的核心观点，避免与原文重复：\n" + overall_summary
 
     body_lines = [
         "## 一、调研背景与目标",
@@ -776,6 +780,24 @@ async def main(question: str):
             await asyncio.to_thread(subprocess.run, ["xdg-open", docx_path])
     except Exception as exc:
         logging.error("Word 生成或打开失败: %s", exc)
+
+    # 生成 PDF 版本并立即打开
+    pdf_name = filename.rsplit(".", 1)[0] + ".pdf"
+    pdf_path = os.path.join(report_dir, pdf_name)
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["pandoc", os.path.join(report_dir, filename), "-o", pdf_path],
+            check=True,
+        )
+        if sys.platform.startswith("darwin"):
+            await asyncio.to_thread(subprocess.run, ["open", pdf_path])
+        elif os.name == "nt":
+            os.startfile(pdf_path)  # type: ignore[attr-defined]
+        else:
+            await asyncio.to_thread(subprocess.run, ["xdg-open", pdf_path])
+    except Exception as exc:
+        logging.error("PDF 生成或打开失败: %s", exc)
 
     # 控制台输出报告内容
     print(report)
