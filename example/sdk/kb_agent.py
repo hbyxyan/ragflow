@@ -595,10 +595,7 @@ async def compose_report(
     if m:
         overall_summary = m.group(1).strip()
 
-    summary_prompt = (
-        "请简明扼要的概括下列内容的核心观点。仅反馈核心观点，不解释说明任何与观点无关的内容。\n"
-        + overall_summary
-    )
+    summary_prompt = "请简明扼要的概括下列内容的核心观点。仅反馈核心观点，不解释说明任何与观点无关的内容。\n" + overall_summary
     short_summary = await call_chat(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": summary_prompt}],
@@ -668,6 +665,7 @@ async def main(question: str):
     insights: List[Dict[str, str]] = []
     references: List[Tuple[str, str]] = []
     tried = set()
+    all_doc_ids: set[str] = set()
     for _ in range(5):
         q = ",".join(keywords)
         ids, names = retrieve_docs(rag, KB1_ID, q)
@@ -689,6 +687,9 @@ async def main(question: str):
                     if doc_id not in ids:
                         ids.append(doc_id)
                         names.append(doc_name)
+
+        all_doc_ids.update(ids)
+        logging.info("累计检索到 %d 个文档", len(all_doc_ids))
 
         new_refs = [(i, n) for i, n in zip(ids, names) if i not in tried]
         if not new_refs:
