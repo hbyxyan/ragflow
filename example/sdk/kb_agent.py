@@ -212,7 +212,7 @@ def doc_has_content(insight: Dict[str, str]) -> bool:
 def wrap_details(label: str, content: str) -> str:
     """Wrap content in a collapsible HTML details block."""
 
-    return f"<details><summary>{label}</summary>\n\n{content}\n</details>"
+    return f"<details><summary>{label}</summary>\n\n{content}\n</details>\n\n"
 
 
 def fold_snippet_section(text: str) -> str:
@@ -556,6 +556,8 @@ async def compose_report(
         messages=[{"role": "user", "content": summary_prompt}],
         max_tokens=32,
     )
+    short_summary = short_summary.strip()
+    short_summary = re.sub(r"^本报告核心观点[:：\s]*", "", short_summary)
 
     body_lines = [
         "## 一、调研背景与目标",
