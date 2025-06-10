@@ -571,8 +571,9 @@ async def compose_report(
     overall_prompt = (
         f"请基于以下各要素的分条归纳内容，生成“主要结论与摘要”部分，严格使用如下结构：\n"
         "#### 2.1 共性做法\n- 共性1...\n\n"
-        "#### 2.2 分歧与争议\n- 分歧1...\n\n"
+        "#### 2.2 分歧与争议\n| 主题 | 观点 |\n| ---- | ---- |\n| 分歧1 | ... |\n\n"
         "#### 2.3 规范化建议\n- 建议1...\n\n"
+        "其中“2.2 分歧与争议”部分必须使用 Markdown 表格呈现。\n"
         "仅按上述结构输出，不得添加其他说明或段落。所有文档编号用脚注标注。\n"
         f"内容如下：\n{context_for_overall}"
     )
@@ -601,7 +602,8 @@ async def compose_report(
         messages=[{"role": "user", "content": summary_prompt}],
         max_tokens=32,
     )
-    short_summary = short_summary.strip()
+    short_summary = short_summary.strip().splitlines()[0]
+    short_summary = re.sub(r"^#+", "", short_summary).strip()
     short_summary = re.sub(r"^本报告核心观点[:：\s]*", "", short_summary)
 
     body_lines = [
@@ -640,7 +642,7 @@ async def compose_report(
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
     meta = f"**调查时间**：{end_time_str}  \n**耗时**：{mins}分{secs}秒  \n**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n**费用**：{TOTAL_COST:.4f}  \n**模型**：{','.join(MODELS_USED)}\n---"
-    report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}\n\n## 四、引用文档\n" + "\n".join(doc_lines) + "\n"
+    report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}\n\n## 四、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
     return report, title, element_summaries
 
@@ -757,23 +759,23 @@ async def main(question: str):
         )
     logging.info("已上传报告 %s", filename)
 
-    # 使用 pandoc 转为 PDF 并立即打开
-    pdf_name = filename.rsplit(".", 1)[0] + ".pdf"
-    pdf_path = os.path.join(report_dir, pdf_name)
+    # 使用 pandoc 转为 Word 文档并立即打开
+    docx_name = filename.rsplit(".", 1)[0] + ".docx"
+    docx_path = os.path.join(report_dir, docx_name)
     try:
         await asyncio.to_thread(
             subprocess.run,
-            ["pandoc", os.path.join(report_dir, filename), "-o", pdf_path],
+            ["pandoc", os.path.join(report_dir, filename), "-o", docx_path],
             check=True,
         )
         if sys.platform.startswith("darwin"):
-            await asyncio.to_thread(subprocess.run, ["open", pdf_path])
+            await asyncio.to_thread(subprocess.run, ["open", docx_path])
         elif os.name == "nt":
-            os.startfile(pdf_path)  # type: ignore[attr-defined]
+            os.startfile(docx_path)  # type: ignore[attr-defined]
         else:
-            await asyncio.to_thread(subprocess.run, ["xdg-open", pdf_path])
+            await asyncio.to_thread(subprocess.run, ["xdg-open", docx_path])
     except Exception as exc:
-        logging.error("PDF 生成或打开失败: %s", exc)
+        logging.error("Word 生成或打开失败: %s", exc)
 
     # 控制台输出报告内容
     print(report)
