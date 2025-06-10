@@ -577,7 +577,10 @@ async def compose_report(
     if m:
         overall_summary = m.group(1).strip()
 
-    summary_prompt = "请用不超过20个字概括下列内容的核心观点：\n" + overall_summary
+    summary_prompt = (
+        "请简明扼要的概括下列内容的核心观点。仅反馈核心观点，不解释说明任何与观点无关的内容。\n"
+        + overall_summary
+    )
     short_summary = await call_chat(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": summary_prompt}],
