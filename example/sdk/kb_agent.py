@@ -376,6 +376,28 @@ async def extract_keywords_from_insights(
     return result
 
 
+async def select_relevant_keywords(question: str, keywords: List[str]) -> List[str]:
+    """让 LLM 判断哪些关键词与问题直接相关"""
+
+    if not keywords:
+        return []
+    prompt = f"请从以下关键词中选择与你的问题最直接相关的词，按重要性排序，仅以 JSON 数组返回，不要添加解释。\n问题：{question}\n关键词列表：{','.join(keywords)}"
+    text = await call_chat(
+        model=OPENAI_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    logging.info("[LLM] 相关关键词评估结果: %s", text)
+    try:
+        kws = json.loads(text)
+        if not isinstance(kws, list):
+            raise ValueError
+    except Exception:
+        kws = [k.strip() for k in re.split(r"[,\s]+", text) if k.strip()]
+    result = [k for k in kws if k in keywords]
+    logging.info("[LLM] 直接相关的关键词: %s", result)
+    return result
+
+
 def retrieve_docs(rag: RAGFlow, dataset_id: str, question: str, threshold: float = 0.3) -> Tuple[List[str], List[str]]:
     """检索知识库并返回相关文档的 ID 与名称"""
 
@@ -619,6 +641,24 @@ async def main(question: str):
         q = ",".join(keywords)
         ids, names = retrieve_docs(rag, KB1_ID, q)
         logging.info("检索关键词: %s -> 找到 %d 个文档", q, len(ids))
+
+        # 让 LLM 评估最相关的关键词并分别检索
+        relevant = await select_relevant_keywords(question, keywords)
+        if relevant:
+            sem_r = asyncio.Semaphore(5)
+
+            async def sem_retrieve(kw: str):
+                async with sem_r:
+                    return await asyncio.to_thread(retrieve_docs, rag, KB1_ID, kw)
+
+            tasks_r = [sem_retrieve(k) for k in relevant]
+            results_r = await asyncio.gather(*tasks_r)
+            for ids_kw, names_kw in results_r:
+                for doc_id, doc_name in zip(ids_kw, names_kw):
+                    if doc_id not in ids:
+                        ids.append(doc_id)
+                        names.append(doc_name)
+
         new_refs = [(i, n) for i, n in zip(ids, names) if i not in tried]
         if not new_refs:
             break
