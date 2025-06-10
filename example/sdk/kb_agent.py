@@ -460,6 +460,9 @@ async def analyze_document(
     """分析单个 Markdown 文档并以结构化 JSON 返回结果"""
 
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
+    if not md_text:
+        logging.error("文档 %s 内容为空，跳过分析", filename)
+        return {}
     if element_keys is None:
         element_keys = DEFAULT_ELEMENT_KEYS
 
@@ -695,6 +698,9 @@ async def main(question: str):
             tried.add(doc_id)
             logging.info("分析文件 %s", doc_name)
             md, real_name = download_and_convert(rag, KB1_ID, doc_id, doc_name)
+            if not md:
+                logging.error("文件 %s 下载或转换失败，已从待分析列表移除", real_name)
+                continue
             documents.append((doc_id, real_name, md))
 
         sem = asyncio.Semaphore(20)
