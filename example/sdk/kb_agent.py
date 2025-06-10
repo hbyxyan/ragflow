@@ -104,10 +104,23 @@ START_TIME = time.time()
 
 # 各模型的费用配置，格式示例：
 # {"model_name": {"prompt": 0.001, "completion": 0.002}}
-try:
-    MODEL_PRICES = json.loads(os.environ.get("MODEL_PRICES", "{}"))
-except Exception:
-    MODEL_PRICES = {}
+DEFAULT_MODEL_PRICES = {
+    "Pro/deepseek-ai/DeepSeek-R1": {"prompt": 0.004, "completion": 0.016},
+    "qwen-long-latest": {"prompt": 0.0005, "completion": 0.002},
+    "Qwen/qwen-long-latest": {"prompt": 0.0005, "completion": 0.002},
+    "qwen3-235b-a22b": {"prompt": 0.002, "completion": 0.020},
+    "Qwen/Qwen3-235B-A22B": {"prompt": 0.0025, "completion": 0.010},
+}
+
+MODEL_PRICES_ENV = os.environ.get("MODEL_PRICES")
+if MODEL_PRICES_ENV:
+    try:
+        MODEL_PRICES = json.loads(MODEL_PRICES_ENV)
+    except Exception as exc:
+        logging.warning("Failed to parse MODEL_PRICES: %s", exc)
+        MODEL_PRICES = DEFAULT_MODEL_PRICES
+else:
+    MODEL_PRICES = DEFAULT_MODEL_PRICES
 
 # 默认需要归纳的业务要素
 DEFAULT_ELEMENT_KEYS = [
