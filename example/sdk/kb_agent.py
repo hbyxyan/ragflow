@@ -257,13 +257,15 @@ async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
             r"#### 2\. 分歧与争议",
             r"#### 3\. 典型原文摘录",
         ]
-        return await call_chat_checked(
+        text = await call_chat_checked(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
             use_long=use_long,
             patterns=patterns,
         )
+        m = re.search(r"(#### 1\. 通用做法.*)", text, flags=re.S)
+        return m.group(1).strip() if m else text.strip()
 
     chunk_size = 20
     current = lines
@@ -571,6 +573,9 @@ async def compose_report(
         use_long=use_long,
         patterns=overall_patterns,
     )
+    m = re.search(r"(#### 2\.1 共性做法.*)", overall_summary, flags=re.S)
+    if m:
+        overall_summary = m.group(1).strip()
 
     summary_prompt = "请用不超过20个字概括下列内容的核心观点：\n" + overall_summary
     short_summary = await call_chat(
@@ -600,12 +605,17 @@ async def compose_report(
             idx_elem += 1
     body = "\n".join(body_lines)
 
-    title_prompt = f"请根据以下问题生成标题，格式为：关于{{主题}}调研报告，不超过20个字，切勿添加额外说明或标注。\n问题：“{question}”\n摘要：“{overall_summary}”"
-    title = await call_chat(
+    title_prompt = (
+        f"请根据以下问题生成标题，要求：\n1. 仅输出一行，不得包含換行或附加说明。\n2. 格式必须为：关于{{{{主题}}}}调研报告。\n3. 主题不超过20个字。\n问题：{question}\n摘要：{overall_summary}"
+    )
+    title_pattern = r"^关于.{1,20}调研报告$"
+    title = await call_chat_checked(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": title_prompt}],
         max_tokens=64,
+        patterns=[title_pattern],
     )
+    title = title.strip().splitlines()[0]
 
     doc_lines = [f"[^{i}]: {name}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
@@ -696,7 +706,7 @@ async def main(question: str):
 
     # 将生成的报告上传回知识库2
     ts = time.strftime("%Y%m%d%H%M")
-    safe_title = re.sub(r"[\\/:*?\"<>|]", "", title)
+    safe_title = re.sub(r"[\\/:*?\"<>|\s]", "", title)
     filename = f"{ts}{safe_title}.md"
     # 本地目录：以时间和标题区分
     report_dir = os.path.join(REPORT_BASE_DIR, f"{ts}{safe_title}")
