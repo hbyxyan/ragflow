@@ -209,6 +209,41 @@ def parse_json_from_text(text: str) -> Dict[str, str]:
         return {}
 
 
+def _canonical_doc_key(name: str) -> tuple[str, str]:
+    """Return (date, base_name) extracted from document display name."""
+    m = re.match(r"^(\d{8})发布_[^_]+_(.+)$", name)
+    if m:
+        date, tail = m.groups()
+    else:
+        date, tail = "00000000", name
+    tail = re.sub(r"[\s_]*\(\d+\)|[\s_]*（\d+）", "", tail)
+    tail = re.sub(r"\s*-?副本", "", tail)
+    return date, tail
+
+
+def deduplicate_references(
+    refs: List[Tuple[str, str]],
+    insights: List[Dict[str, str]],
+) -> tuple[List[Tuple[str, str]], List[Dict[str, str]]]:
+    """Remove duplicate docs keeping the latest by date."""
+    mapping: Dict[str, Tuple[str, str, Dict[str, str], str]] = {}
+    order: List[str] = []
+    for (doc_id, name), insight in zip(refs, insights):
+        date, key = _canonical_doc_key(name)
+        cur = mapping.get(key)
+        if cur is None or date > cur[3]:
+            mapping[key] = (doc_id, name, insight, date)
+            if cur is None:
+                order.append(key)
+    dedup_refs: List[Tuple[str, str]] = []
+    dedup_insights: List[Dict[str, str]] = []
+    for key in order:
+        doc_id, name, insight, _ = mapping[key]
+        dedup_refs.append((doc_id, name))
+        dedup_insights.append(insight)
+    return dedup_refs, dedup_insights
+
+
 # ---------- 工具函数 ----------
 
 
@@ -730,6 +765,7 @@ async def main(question: str):
         if not extra:
             break
 
+    references, insights = deduplicate_references(references, insights)
     report, title, element_summaries = await compose_report(question, insights, references, element_keys)
     logging.info("报告生成完毕，正在上传到知识库2")
 
@@ -761,23 +797,40 @@ async def main(question: str):
         )
     logging.info("已上传报告 %s", filename)
 
-    # 使用 pandoc 转为 HTML 文档并立即打开
-    html_name = filename.rsplit(".", 1)[0] + ".html"
-    html_path = os.path.join(report_dir, html_name)
+    # 使用 pandoc 转为 Word 和 PDF 文档并立即打开
+    docx_name = filename.rsplit(".", 1)[0] + ".docx"
+    docx_path = os.path.join(report_dir, docx_name)
+    pdf_name = filename.rsplit(".", 1)[0] + ".pdf"
+    pdf_path = os.path.join(report_dir, pdf_name)
     try:
         await asyncio.to_thread(
             subprocess.run,
-            ["pandoc", os.path.join(report_dir, filename), "-o", html_path],
+            ["pandoc", os.path.join(report_dir, filename), "-o", docx_path],
             check=True,
         )
         if sys.platform.startswith("darwin"):
-            await asyncio.to_thread(subprocess.run, ["open", html_path])
+            await asyncio.to_thread(subprocess.run, ["open", docx_path])
         elif os.name == "nt":
-            os.startfile(html_path)  # type: ignore[attr-defined]
+            os.startfile(docx_path)  # type: ignore[attr-defined]
         else:
-            await asyncio.to_thread(subprocess.run, ["xdg-open", html_path])
+            await asyncio.to_thread(subprocess.run, ["xdg-open", docx_path])
     except Exception as exc:
-        logging.error("HTML 生成或打开失败: %s", exc)
+        logging.error("Word 生成或打开失败: %s", exc)
+
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["pandoc", os.path.join(report_dir, filename), "-o", pdf_path],
+            check=True,
+        )
+        if sys.platform.startswith("darwin"):
+            await asyncio.to_thread(subprocess.run, ["open", pdf_path])
+        elif os.name == "nt":
+            os.startfile(pdf_path)  # type: ignore[attr-defined]
+        else:
+            await asyncio.to_thread(subprocess.run, ["xdg-open", pdf_path])
+    except Exception as exc:
+        logging.error("PDF 生成或打开失败: %s", exc)
 
     # 控制台输出报告内容
     print(report)
