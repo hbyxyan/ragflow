@@ -797,40 +797,23 @@ async def main(question: str):
         )
     logging.info("已上传报告 %s", filename)
 
-    # 使用 pandoc 转为 Word 和 PDF 文档并立即打开
-    docx_name = filename.rsplit(".", 1)[0] + ".docx"
-    docx_path = os.path.join(report_dir, docx_name)
-    pdf_name = filename.rsplit(".", 1)[0] + ".pdf"
-    pdf_path = os.path.join(report_dir, pdf_name)
+    # 使用 pandoc 转为 HTML 文档并立即打开
+    html_name = filename.rsplit(".", 1)[0] + ".html"
+    html_path = os.path.join(report_dir, html_name)
     try:
         await asyncio.to_thread(
             subprocess.run,
-            ["pandoc", os.path.join(report_dir, filename), "-o", docx_path],
+            ["pandoc", os.path.join(report_dir, filename), "-o", html_path],
             check=True,
         )
         if sys.platform.startswith("darwin"):
-            await asyncio.to_thread(subprocess.run, ["open", docx_path])
+            await asyncio.to_thread(subprocess.run, ["open", html_path])
         elif os.name == "nt":
-            os.startfile(docx_path)  # type: ignore[attr-defined]
+            os.startfile(html_path)  # type: ignore[attr-defined]
         else:
-            await asyncio.to_thread(subprocess.run, ["xdg-open", docx_path])
+            await asyncio.to_thread(subprocess.run, ["xdg-open", html_path])
     except Exception as exc:
-        logging.error("Word 生成或打开失败: %s", exc)
-
-    try:
-        await asyncio.to_thread(
-            subprocess.run,
-            ["pandoc", os.path.join(report_dir, filename), "-o", pdf_path],
-            check=True,
-        )
-        if sys.platform.startswith("darwin"):
-            await asyncio.to_thread(subprocess.run, ["open", pdf_path])
-        elif os.name == "nt":
-            os.startfile(pdf_path)  # type: ignore[attr-defined]
-        else:
-            await asyncio.to_thread(subprocess.run, ["xdg-open", pdf_path])
-    except Exception as exc:
-        logging.error("PDF 生成或打开失败: %s", exc)
+        logging.error("HTML 生成或打开失败: %s", exc)
 
     # 控制台输出报告内容
     print(report)
