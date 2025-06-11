@@ -597,18 +597,21 @@ async def compose_report(
         overall_summary = m.group(1).strip()
 
     summary_prompt = (
-        "请根据提问整理调研的背景与目标，并概括下列内容的核心观点。"
-        '仅以 JSON 格式回复，如：{"调研背景与目标": "...", "核心观点": "..."}。'
+        "请根据提问整理调研的背景与目标，概括下列内容的核心观点，并生成报告标题。"
+        "仅以 JSON 格式回复，如："
+        '{"调研背景与目标": "...", "核心观点": "...", "标题": "关于XXX调研报告"}。'
+        "标题格式必须为：关于{{主题}}调研报告，主题不超过20个字。"
         "不得添加其他说明。\n问题：" + question + "\n内容:\n" + overall_summary
     )
     summary_text = await call_chat_checked(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": summary_prompt}],
-        patterns=[r"调研背景与目标", r"核心观点"],
+        patterns=[r"调研背景与目标", r"核心观点", r"标题"],
     )
     summary_data = parse_json_from_text(summary_text)
     bg_goal = summary_data.get("调研背景与目标", "").strip()
     short_summary = summary_data.get("核心观点", "").strip()
+    title = summary_data.get("标题", "").strip().splitlines()[0]
     short_summary = re.sub(r"^#+", "", short_summary).strip()
     short_summary = re.sub(r"^本报告核心观点[:：\s]*", "", short_summary)
 
@@ -618,6 +621,7 @@ async def compose_report(
         "",
         "## 二、主要结论与摘要",
         f"本报告核心观点：{short_summary}",
+        "",
         overall_summary,
         "",
         "## 三、要素逐项归纳",
@@ -631,17 +635,9 @@ async def compose_report(
             idx_elem += 1
     body = "\n".join(body_lines)
 
-    title_prompt = (
-        f"请根据以下问题生成标题，要求：\n1. 仅输出一行，不得包含換行或附加说明。\n2. 格式必须为：关于{{{{主题}}}}调研报告。\n3. 主题不超过20个字。\n问题：{question}\n摘要：{overall_summary}"
-    )
     title_pattern = r"^关于.{1,20}调研报告$"
-    title = await call_chat_checked(
-        model=OPENAI_MODEL,
-        messages=[{"role": "user", "content": title_prompt}],
-        max_tokens=64,
-        patterns=[title_pattern],
-    )
-    title = title.strip().splitlines()[0]
+    if not re.match(title_pattern, title):
+        logging.warning("标题格式不符: %s", title)
 
     doc_lines = [f"[^{i}]: {name}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
