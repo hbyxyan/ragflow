@@ -596,18 +596,25 @@ async def compose_report(
     if m:
         overall_summary = m.group(1).strip()
 
-    summary_prompt = "请简明扼要的概括下列内容的核心观点。仅反馈核心观点，不解释说明任何与观点无关的内容。\n内容:\n" + overall_summary
-    short_summary = await call_chat(
+    summary_prompt = (
+        "请根据提问整理调研的背景与目标，并概括下列内容的核心观点。"
+        '仅以 JSON 格式回复，如：{"调研背景与目标": "...", "核心观点": "..."}。'
+        "不得添加其他说明。\n问题：" + question + "\n内容:\n" + overall_summary
+    )
+    summary_text = await call_chat_checked(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": summary_prompt}],
+        patterns=[r"调研背景与目标", r"核心观点"],
     )
-    short_summary = short_summary.strip().splitlines()[0]
+    summary_data = parse_json_from_text(summary_text)
+    bg_goal = summary_data.get("调研背景与目标", "").strip()
+    short_summary = summary_data.get("核心观点", "").strip()
     short_summary = re.sub(r"^#+", "", short_summary).strip()
     short_summary = re.sub(r"^本报告核心观点[:：\s]*", "", short_summary)
 
     body_lines = [
         "## 一、调研背景与目标",
-        question,
+        bg_goal,
         "",
         "## 二、主要结论与摘要",
         f"本报告核心观点：{short_summary}",
@@ -758,23 +765,23 @@ async def main(question: str):
         )
     logging.info("已上传报告 %s", filename)
 
-    # 使用 pandoc 转为 Word 文档并立即打开
-    docx_name = filename.rsplit(".", 1)[0] + ".docx"
-    docx_path = os.path.join(report_dir, docx_name)
+    # 使用 pandoc 转为 HTML 文档并立即打开
+    html_name = filename.rsplit(".", 1)[0] + ".html"
+    html_path = os.path.join(report_dir, html_name)
     try:
         await asyncio.to_thread(
             subprocess.run,
-            ["pandoc", os.path.join(report_dir, filename), "-o", docx_path],
+            ["pandoc", os.path.join(report_dir, filename), "-o", html_path],
             check=True,
         )
         if sys.platform.startswith("darwin"):
-            await asyncio.to_thread(subprocess.run, ["open", docx_path])
+            await asyncio.to_thread(subprocess.run, ["open", html_path])
         elif os.name == "nt":
-            os.startfile(docx_path)  # type: ignore[attr-defined]
+            os.startfile(html_path)  # type: ignore[attr-defined]
         else:
-            await asyncio.to_thread(subprocess.run, ["xdg-open", docx_path])
+            await asyncio.to_thread(subprocess.run, ["xdg-open", html_path])
     except Exception as exc:
-        logging.error("Word 生成或打开失败: %s", exc)
+        logging.error("HTML 生成或打开失败: %s", exc)
 
     # 控制台输出报告内容
     print(report)
