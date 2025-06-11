@@ -45,9 +45,9 @@ def create():
     dataset_name = req["name"]
     if not isinstance(dataset_name, str):
         return get_data_error_result(message="Dataset name must be string.")
-    if dataset_name == "":
+    if dataset_name.strip() == "":
         return get_data_error_result(message="Dataset name can't be empty.")
-    if len(dataset_name.encode("utf-8")) >= DATASET_NAME_LIMIT:
+    if len(dataset_name.encode("utf-8")) > DATASET_NAME_LIMIT:
         return get_data_error_result(
             message=f"Dataset name length is {len(dataset_name)} which is large than {DATASET_NAME_LIMIT}")
 
@@ -185,9 +185,9 @@ def list_kbs():
                 tenants, current_user.id, 0,
                 0, orderby, desc, keywords, parser_id)
             kbs = [kb for kb in kbs if kb["tenant_id"] in tenants]
+            total = len(kbs)
             if page_number and items_per_page:
                 kbs = kbs[(page_number-1)*items_per_page:page_number*items_per_page]
-            total = len(kbs)
         return get_json_result(data={"kbs": kbs, "total": total})
     except Exception as e:
         return server_error_response(e)
