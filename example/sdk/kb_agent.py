@@ -259,6 +259,12 @@ def doc_has_content(insight: Dict[str, str]) -> bool:
     return bool(biz or snippet or any(str(v).strip() for v in plan_values))
 
 
+def sanitize_doc_name(name: str) -> str:
+    """Escape brackets in document names to avoid Markdown links."""
+
+    return name.replace("[", "\\[").replace("]", "\\]")
+
+
 def wrap_details(label: str, content: str) -> str:
     """Wrap content in a collapsible HTML details block."""
 
@@ -685,7 +691,7 @@ async def compose_report(
     if not re.match(title_pattern, title):
         logging.warning("标题格式不符: %s", title)
 
-    doc_lines = [f"[^{i}]: {name}" for i, name, _ in doc_list_full]
+    doc_lines = [f"[^{i}]: {sanitize_doc_name(name)}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
