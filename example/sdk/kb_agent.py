@@ -28,7 +28,6 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
-import unicodedata
 
 from openai import AsyncOpenAI
 from ragflow_sdk import RAGFlow
@@ -261,19 +260,9 @@ def doc_has_content(insight: Dict[str, str]) -> bool:
 
 
 def sanitize_doc_name(name: str) -> str:
-    """Escape special Markdown characters in document names."""
+    """Escape brackets in document names to avoid Markdown links."""
 
-    special_chars = "\\`*_{}[]()#+-.!"
-    for char in special_chars:
-        name = name.replace(char, f"\\{char}")
-    return name
-
-
-def normalize_text(text: str) -> str:
-    """Normalize unicode text and strip control characters."""
-
-    text = unicodedata.normalize("NFKC", text)
-    return re.sub(r"[\x00-\x1F\x7F-\x9F]", "", text)
+    return name.replace("[", "\\[").replace("]", "\\]")
 
 
 def wrap_details(label: str, content: str) -> str:
@@ -704,7 +693,7 @@ async def compose_report(
     if not re.match(title_pattern, title):
         logging.warning("标题格式不符: %s", title)
 
-    doc_lines = [f"[^{i}]: {sanitize_doc_name(normalize_text(name))}" for i, name, _ in doc_list_full]
+    doc_lines = [f"[^{i}]: {sanitize_doc_name(name)}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
