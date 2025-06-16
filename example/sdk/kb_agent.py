@@ -27,7 +27,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from openai import AsyncOpenAI
 from ragflow_sdk import RAGFlow
@@ -247,16 +247,17 @@ def deduplicate_references(
 # ---------- 工具函数 ----------
 
 
-def doc_has_content(insight: Dict[str, str]) -> bool:
+def doc_has_content(insight: List[Dict[str, str]] | Any) -> bool:
     """判断文档分析结果是否包含有价值的内容"""
 
-    if not isinstance(insight, dict):
+    if not isinstance(insight, list):
         return False
-    biz = str(insight.get("业务问题", "")).strip()
-    snippet = str(insight.get("与问题相关的原文摘录", "")).strip()
-    plan = insight.get("需求方案", {})
-    plan_values = plan.values() if isinstance(plan, dict) else []
-    return bool(biz or snippet or any(str(v).strip() for v in plan_values))
+    for item in insight:
+        if not isinstance(item, dict):
+            continue
+        if item.get("观点") or item.get("说明") or item.get("原文摘录"):
+            return True
+    return False
 
 
 def sanitize_doc_name(name: str) -> str:
@@ -509,40 +510,29 @@ async def analyze_document(
     question: str,
     md_text: str,
     filename: str,
-    element_keys: List[str] | None = None,
-) -> Dict[str, str]:
-    """分析单个 Markdown 文档并以结构化 JSON 返回结果"""
+) -> List[Dict[str, str]]:
+    """分析单个 Markdown 文档并返回 insight 列表"""
 
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
     if not md_text:
         logging.error("文档 %s 内容为空，跳过分析", filename)
-        return {}
-    if element_keys is None:
-        element_keys = DEFAULT_ELEMENT_KEYS
+        return []
 
-    plan_fields = {k: "" for k in element_keys}
-    plan_fields.update(
+    example = [
         {
-            "参与角色": "",
+            "发布时间": "20200101",
+            "观点": "……",
+            "原文摘录": "……",
+            "说明": "……",
         }
-    )
-    example = {
-        "文档标题": "",
-        "发布时间": "",
-        "业务问题": "",
-        "需求方案": plan_fields,
-        "与问题相关的原文摘录": "",
-    }
+    ]
     prompt = (
-        "你是一名资深需求分析师，请专注于分析下列需求文档中与业务问题“" + question + "”最直接相关的内容，提炼关键信息。"
-        "请只输出与该问题相关的业务问题与需求方案内容，其它字段如无信息可留空。"
-        "如不确定与问题关联性，请先保留该内容，由后续批量归纳时判断其价值。"
-        "并在'与问题相关的原文摘录'字段摘录最关键的原文或段落，便于后续引用。\n"
-        f"需求方案的要素包括：{','.join(element_keys + ['参与角色'])}。\n"
-        "请按照以下 JSON 结构回复：\n" + json.dumps(example, ensure_ascii=False) + "\n\n文档内容：\n" + md_text
+        "请根据以下文档内容和提问“" + question + "”提炼所有直接相关的关键信息点，以 JSON 数组形式给出。"
+        "数组每个元素包含: 发布时间、观点、原文摘录（可选）、说明。"
+        "仅返回 JSON，不要添加解释。\n"
+        "示例：\n" + json.dumps(example, ensure_ascii=False) + "\n\n文档内容：\n" + md_text
     )
     tokens = count_tokens(prompt)
-    # 根据输入 token 数量决定使用常规模型还是长上下文模型
     model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
     use_long = model == OPENAI_LONG_MODEL
     max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
@@ -554,14 +544,14 @@ async def analyze_document(
         use_long=use_long,
     )
     data = parse_json_from_text(result)
-    # 从文件名中解析发布时间，如 20181108发布_JK005-1234_xxx.docx
-    m = re.search(r"(\d{8})", filename)
-    if m:
-        data["发布时间"] = m.group(1)
-    else:
-        data["发布时间"] = ""
-    if "文档标题" not in data or not data["文档标题"]:
-        data["文档标题"] = filename
+    if not isinstance(data, list):
+        logging.error("LLM 返回格式异常: %s", result)
+        return []
+    pub_match = re.search(r"(\d{8})", filename)
+    pub = pub_match.group(1) if pub_match else ""
+    for item in data:
+        if "发布时间" not in item or not item["发布时间"]:
+            item["发布时间"] = pub
     logging.info("[LLM] 分析结果: %s", data)
     return data
 
@@ -585,40 +575,41 @@ async def compose_report(
 
     global TOKENS_IN, TOKENS_OUT, MODELS_USED
 
-    docs: List[Tuple[int, str, str, Dict]] = []
+    docs: List[Tuple[int, str, str, List[Dict[str, str]]]] = []
     idx = 1
-    doc_idx_map: Dict[Tuple[str, str], int] = {}
     for (doc_id, name), insight in zip(references, insights):
         if not insight:
             continue
         if not doc_has_content(insight):
             logging.info("文档 %s 无有效内容，跳过", name)
             continue
-        pub = insight.get("发布时间", "") if isinstance(insight, dict) else ""
-        doc_idx_map[(doc_id, name)] = idx
+        if isinstance(insight, list) and insight:
+            pub = insight[0].get("发布时间", "")
+        else:
+            pub = ""
         docs.append((idx, name, pub, insight))
         idx += 1
 
     if element_keys is None:
-        element_keys = DEFAULT_ELEMENT_KEYS
+        element_keys = ["相关观点"]
 
     doc_list_full: List[Tuple[int, str, str]] = []
-    elements: Dict[str, List[Tuple[int, str]]] = {k: [] for k in element_keys}
+    elements: Dict[str, List[Tuple[int, str]]] = {"相关观点": []}
 
     for i, name, pub, insight in docs:
         doc_list_full.append((i, name, pub))
-        plan = insight.get("需求方案", {})
-        if not isinstance(plan, dict):
+        if not isinstance(insight, list):
             continue
-        for key in element_keys:
-            text = str(plan.get(key, "")).strip()
+        for item in insight:
+            parts = [item.get("观点", "").strip(), item.get("说明", "").strip(), item.get("原文摘录", "").strip()]
+            text = " ".join(p for p in parts if p)
             if text:
-                elements[key].append((i, text))
+                elements["相关观点"].append((i, text))
 
     element_summaries: Dict[str, str] = {}
-    tasks = [reduce_element(key, items) for key, items in elements.items()]
+    tasks = [reduce_element(key, items) for key, items in elements.items() if items]
     results = await asyncio.gather(*tasks)
-    for key, summary in zip(elements.keys(), results):
+    for key, summary in zip([k for k, v in elements.items() if v], results):
         element_summaries[key] = summary
 
     context_for_overall = "\n\n".join(f"{k}:\n{v}" for k, v in element_summaries.items() if v)
