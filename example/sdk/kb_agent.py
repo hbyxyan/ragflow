@@ -296,9 +296,9 @@ async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
             "#### 1. 通用做法\n"
             "- 仅列本要素的主要共性做法。\n\n"
             "#### 2. 分歧与争议\n"
-            "- 每条写明具体分歧/争议点，明确不同做法并标注涉及文档编号（如[^1][^4]）。\n\n"
+            "- 每条写明具体分歧/争议点，明确不同做法并标注涉及文档编号（如[1][4]）。\n\n"
             "#### 3. 典型原文摘录\n"
-            "> 每条仅列一句关键原文，标注文档编号（如[^2]）。\n"
+            "> 每条仅列一句关键原文，标注文档编号（如[2]）。\n"
             "> 如内容多，可只选最具代表性的2-3条。\n\n"
             "回复格式务必严格与上方示例对齐，不要出现任何说明或多余结构。\n"
             "字段内容如下（每条已标明文档编号）：\n\n" + context
@@ -628,7 +628,7 @@ async def compose_report(
         "#### 2.2 分歧与争议\n| 主题 | 观点 |\n| ---- | ---- |\n| 分歧1 | ... |\n\n"
         "#### 2.3 规范化建议\n- 建议1...\n\n"
         "其中“2.2 分歧与争议”部分必须使用 Markdown 表格呈现。\n"
-        "仅按上述结构输出，不得添加其他说明或段落。所有文档编号用脚注标注。\n"
+        "仅按上述结构输出，不得添加其他说明或段落。所有文档编号用方括号标注（如[1]）。\n"
         f"内容如下：\n{context_for_overall}"
     )
     model = OPENAI_LONG_MODEL if count_tokens(overall_prompt) > 95000 else OPENAI_MODEL
@@ -693,7 +693,7 @@ async def compose_report(
     if not re.match(title_pattern, title):
         logging.warning("标题格式不符: %s", title)
 
-    doc_lines = [f"[^{i}]: {sanitize_doc_name(name)}" for i, name, _ in doc_list_full]
+    doc_lines = [f"{i}. {sanitize_doc_name(name)}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
