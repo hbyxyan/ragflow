@@ -255,7 +255,8 @@ def doc_has_content(insight: List[Dict[str, str]] | Any) -> bool:
     for item in insight:
         if not isinstance(item, dict):
             continue
-        if item.get("观点") or item.get("说明") or item.get("原文摘录"):
+        point = str(item.get("观点", "")).strip()
+        if point:
             return True
     return False
 
@@ -527,9 +528,12 @@ async def analyze_document(
         }
     ]
     prompt = (
-        "请根据以下文档内容和提问“" + question + "”提炼所有直接相关的关键信息点，以 JSON 数组形式给出。"
-        "数组每个元素包含: 发布时间、观点、原文摘录（可选）、说明。"
-        "仅返回 JSON，不要添加解释。\n"
+        "请根据以下文档内容和提问“" + question + "”提炼所有直接相关的关键信息点，并以 JSON 数组形式给出。"
+        "数组每个元素的字段说明如下：\n"
+        "- 观点：从文档中提炼的与提问直接相关的一个关键观点或结论，没有则留空。\n"
+        "- 原文摘录：支持该观点的关键原文片段，可选，如无相关原文则留空，尽量选择最能体现观点的句子或段落。\n"
+        "- 说明：对该观点的简要分析或背景说明，阐明其与提问的关联。\n"
+        "仅返回 JSON，不要添加任何解释。\n"
         "示例：\n" + json.dumps(example, ensure_ascii=False) + "\n\n文档内容：\n" + md_text
     )
     tokens = count_tokens(prompt)
