@@ -587,6 +587,7 @@ async def compose_report(
 
     docs: List[Tuple[int, str, str, Dict]] = []
     idx = 1
+    doc_idx_map: Dict[Tuple[str, str], int] = {}
     for (doc_id, name), insight in zip(references, insights):
         if not insight:
             continue
@@ -594,6 +595,7 @@ async def compose_report(
             logging.info("文档 %s 无有效内容，跳过", name)
             continue
         pub = insight.get("发布时间", "") if isinstance(insight, dict) else ""
+        doc_idx_map[(doc_id, name)] = idx
         docs.append((idx, name, pub, insight))
         idx += 1
 
