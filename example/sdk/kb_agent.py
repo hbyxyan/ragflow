@@ -266,8 +266,8 @@ def doc_has_content(insight: List[Dict[str, str]] | Any) -> bool:
     for item in insight:
         if not isinstance(item, dict):
             continue
-        viewpoint = str(item.get("观点", "")).strip()
-        if viewpoint:
+        action = str(item.get("系统行为", "")).strip()
+        if action:
             return True
     return False
 
@@ -276,77 +276,6 @@ def sanitize_doc_name(name: str) -> str:
     """Escape brackets in document names to avoid Markdown links."""
 
     return name.replace("[", "\\[").replace("]", "\\]")
-
-
-def wrap_details(label: str, content: str) -> str:
-    """Wrap content in a collapsible HTML details block."""
-
-    return f"<details><summary>{label}</summary>\n\n{content}\n</details>\n\n"
-
-
-def strip_code_fences(text: str) -> str:
-    """Remove leading and trailing fenced code blocks."""
-
-    text = text.strip()
-    text = re.sub(r"^```(?:\w+)?\n?", "", text)
-    text = re.sub(r"```\s*$", "", text)
-    return text.strip()
-
-
-def fold_snippet_section(text: str) -> str:
-    """Always collapse the snippet section using HTML details."""
-
-    m = re.search(r"(#### 3\. 典型原文摘录\n)(.+)", text, flags=re.S)
-    if not m:
-        return text
-    header, rest = m.groups()
-    folded = wrap_details("典型原文摘录", rest.strip())
-    return text[: m.start()] + header + folded
-
-
-async def cluster_insight_batch(items: List[Tuple[int, Dict[str, str]]]) -> List[Dict[str, Any]]:
-    """Group a batch of insights by theme using the LLM."""
-
-    records = [
-        {
-            "文档编号": i,
-            "发布时间": d.get("发布时间", ""),
-            "观点": d.get("观点", ""),
-            "说明": d.get("说明", ""),
-            "原文摘录": d.get("原文摘录", ""),
-        }
-        for i, d in items
-    ]
-    prompt = (
-        "请对这些 insight 进行主题聚类和归纳总结：\n\n"
-        "对每个主题，输出以下字段：\n"
-        "- 主题：一句话描述聚合逻辑点。\n"
-        "- 观点摘要：简要列出该主题下的主要观点（合并重复）。\n"
-        "- 共识（可选）：若多个 insight 在条件和时间上完全一致，可列为共识。\n"
-        "- 差异说明：若观点不同但适用于不同时间或业务，请说明为并存逻辑。\n"
-        "- 代表原文：列出1~3条原文摘录，标注文档编号。\n\n"
-        "⚠️ 特别说明：不同发布时间的 insight 属于时间演进，不是冲突；"
-        "不同业务条线或条件下的规则可能并存，不能作为分歧；"
-        "只有当多个 insight 对相同业务背景且同一时间点逻辑完全相反时，才视为冲突。\n"
-        "仅以 JSON 数组返回，不要添加其他说明。\n"
-        "若原文中含有 Markdown 链接等特殊格式，请转为纯文本或转义，确保 JSON 可正常解析。\n"
-        "数据：\n" + json.dumps(records, ensure_ascii=False)
-    )
-    tokens = count_tokens(prompt)
-    model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
-    use_long = model == OPENAI_LONG_MODEL
-    max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-    text = await call_chat(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-        use_long=use_long,
-    )
-    data = parse_json_from_text(text)
-    if not isinstance(data, list):
-        logging.error("主题聚类返回格式异常: %s", text)
-        return []
-    return data
 
 
 def merge_by_function(insights: List[Dict[str, Any]]) -> Dict[str, List[Dict]]:
