@@ -558,7 +558,8 @@ async def compose_report(
         quotes = [f"原文（{it.get('发布时间', '')}）：“{it.get('原文摘录', '').strip()}”[{it.get('文档编号')}]" for it in items if str(it.get("原文摘录", "")).strip()]
         if quotes:
             lines.append("")
-            lines.extend(f"> {q}" for q in quotes)
+            for q in quotes:
+                lines.append(f"> {q}")
         sections.append("\n".join(lines))
 
     theme_text = "\n\n".join(sections)
@@ -595,7 +596,7 @@ async def compose_report(
     if not re.match(title_pattern, title):
         logging.warning("标题格式不符: %s", title)
 
-    doc_lines = [f"{i}. {sanitize_doc_name(name)}" for i, name, _ in doc_list_full]
+    doc_lines = [f"文档编号：{i}. {sanitize_doc_name(name)}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
