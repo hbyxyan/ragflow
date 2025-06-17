@@ -281,6 +281,15 @@ def wrap_details(label: str, content: str) -> str:
     return f"<details><summary>{label}</summary>\n\n{content}\n</details>\n\n"
 
 
+def strip_code_fences(text: str) -> str:
+    """Remove leading and trailing fenced code blocks."""
+
+    text = text.strip()
+    text = re.sub(r"^```(?:\w+)?\n?", "", text)
+    text = re.sub(r"```\s*$", "", text)
+    return text.strip()
+
+
 def fold_snippet_section(text: str) -> str:
     """Always collapse the snippet section using HTML details."""
 
@@ -362,7 +371,7 @@ async def merge_theme_batches(batches: List[List[Dict[str, Any]]]) -> str:
         max_tokens=max_tokens,
         use_long=use_long,
     )
-    return text.strip()
+    return strip_code_fences(text)
 
 
 async def extract_keywords(question: str, limit: int = 5) -> List[str]:
