@@ -198,15 +198,18 @@ def count_tokens(text: str) -> int:
     return len(encoding.encode(text))
 
 
-def parse_json_from_text(text: str) -> Dict[str, str]:
-    """从 LLM 回复中提取 JSON 对象并解析为字典"""
+def parse_json_from_text(text: str) -> Any:
+    """从文本中提取 JSON 对象或数组并解析."""
+
+    m = re.search(r"\{.*?\}|\[.*?\]", text, flags=re.S)
+    if not m:
+        logging.error("未找到 JSON 片段")
+        return None
     try:
-        start = text.index("{")
-        end = text.rindex("}") + 1
-        return json.loads(text[start:end])
+        return json.loads(m.group(0))
     except Exception as exc:
         logging.error("JSON 解析失败: %s", exc)
-        return {}
+        return None
 
 
 def _canonical_doc_key(name: str) -> tuple[str, str]:
@@ -553,6 +556,9 @@ async def analyze_document(
         use_long=use_long,
     )
     data = parse_json_from_text(result)
+    if data is None:
+        logging.error("LLM 返回无法解析的 JSON: %s", result)
+        return []
     if not isinstance(data, list):
         logging.error("LLM 返回格式异常: %s", result)
         return []
@@ -662,7 +668,7 @@ async def compose_report(
         messages=[{"role": "user", "content": summary_prompt}],
         patterns=[r"调研背景与目标", r"核心观点", r"标题"],
     )
-    summary_data = parse_json_from_text(summary_text)
+    summary_data = parse_json_from_text(summary_text) or {}
     bg_goal = summary_data.get("调研背景与目标", "").strip()
     short_summary = summary_data.get("核心观点", "").strip()
     title = summary_data.get("标题", "").strip().splitlines()[0]
