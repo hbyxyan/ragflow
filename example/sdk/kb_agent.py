@@ -346,32 +346,17 @@ async def cluster_insight_batch(items: List[Tuple[int, Dict[str, str]]]) -> List
     return data
 
 
-async def merge_theme_batches(batches: List[List[Dict[str, Any]]]) -> str:
-    """Merge multiple theme batches into a markdown report body."""
+def merge_by_function(insights: List[Dict[str, Any]]) -> Dict[str, List[Dict]]:
+    """按功能模块聚合 insight，保留不同条件与发布时间的多条记录"""
 
-    joined = "\n".join(json.dumps(b, ensure_ascii=False) for b in batches if b)
-    if not joined:
-        return ""
-    prompt = (
-        "下面是多批次的主题归纳结果，请合并重复或近似主题，"
-        "整理为 Markdown 三级标题（### 主题名）的报告内容。"
-        "每个主题下用自然语言段落综合描述观点分布、背景差异、共识点等，"
-        "若存在差异，请说明是否因发布时间或业务范围差异而并存。"
-        "保留代表性原文作为引用，文档编号保持原样。"
-        "仅返回 Markdown 文本，不要添加其他说明。\n"
-        "数据：\n" + joined
-    )
-    tokens = count_tokens(prompt)
-    model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
-    use_long = model == OPENAI_LONG_MODEL
-    max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-    text = await call_chat(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-        use_long=use_long,
-    )
-    return strip_code_fences(text)
+    from collections import defaultdict
+
+    merged = defaultdict(list)
+    for item in insights:
+        module = str(item.get("功能模块", "")).strip()
+        if module:
+            merged[module].append(item)
+    return dict(merged)
 
 
 async def extract_keywords(question: str, limit: int = 5) -> List[str]:
@@ -525,22 +510,32 @@ async def analyze_document(
 
     example = [
         {
+            "功能模块": "退保回退",
             "发布时间": "20200101",
-            "观点": "样例观点",
-            "原文摘录": "样例原文",
-            "说明": "样例说明",
+            "适用条件": "原任务为保全生效，未存在后续保全",
+            "系统行为": "系统自动展示可回退任务，阻断未生效任务回退",
+            "例外或限制": "如有规则适用于特定渠道/地区/时间段，或不适用某场景，请明确列出",
+            "原文摘录": "回退保全任务的任务状态必须为'保全生效'...",
         }
     ]
     prompt = (
-        f"请结合问题：{question}\n"
-        "严格分析下列文档，仅返回与问题直接、明确相关的insight，不相关内容严禁返回。\n"
-        "每个insight必须包含足够多与问题相关的原文摘要，以说明与问题之间的具体关联，不能泛泛表述及联想。\n"
-        "仅以JSON数组形式返回，字段包括“发布时间”、“观点”、“原文摘录”、“说明”，格式严谨。\n"
-        "若无直接相关内容，必须返回空数组 []，禁止返回无关信息。\n" + json.dumps(example, ensure_ascii=False) + "\n"
-        "特别注意：文档通常仅描述部分修改或新增逻辑，请不要假设它覆盖全部流程；"
-        "若文档说明由 A 改为 B，应明确这是对 A 的修改；多个 insight 可描述同一业务在不同时间或条件下的变化，并不视为冲突。\n"
-        "原文摘录应选取能支撑观点的关键句子，避免章节标题、编号或流程图说明等无意义内容。\n"
-        "严禁在 JSON 数组之外输出任何字符或换行，所有引号需正确转义，若无相关内容返回 []。\n\n"
+        f"你是一位资深系统分析师，负责从历史需求文档中提取“当前系统行为（As-Is）”。\n\n"
+        f"请结合提问：“{question}”，严格从以下文档中提取与问题**直接相关**的系统行为信息，并输出结构化结果。\n\n"
+        "⚠️ 提取要求如下：\n"
+        "- 仅提取系统已明确实现的功能，不包含规划中、建议类内容。\n"
+        "- 信息必须与问题存在直接关联，无关内容禁止返回。\n"
+        "- 每条信息必须提供对应原文摘录，确保可验证与问题相关。\n"
+        "- 禁止联想或补全未明确写明的内容。\n"
+        "- 严禁输出 JSON 之外的任何字符。\n\n"
+        "返回格式：JSON 数组，每个元素包含以下字段：\n"
+        "- 功能模块：功能或子系统的名称，如“退保申请阻断”\n"
+        "- 发布时间：该规则对应的文档发布时间（格式：YYYYMMDD，可用文件名提取）\n"
+        "- 适用条件：该行为适用的业务前提或触发条件\n"
+        "- 系统行为：系统当前明确执行的动作或限制逻辑\n"
+        "- 例外或限制：如有规则适用于特定渠道/地区/时间段，或不适用某场景，请明确列出\n"
+        "- 原文摘录：原文中支持该逻辑的句子或段落，避免章节标题、编号或流程图说明等无意义内容。\n\n"
+        f"示例：\n{json.dumps(example, ensure_ascii=False, indent=2)}\n\n"
+        "若无与问题直接相关的内容，请返回空数组 [].\n\n"
         "文档内容:\n" + md_text
     )
     tokens = count_tokens(prompt)
@@ -612,18 +607,33 @@ async def compose_report(
         for item in insight:
             insight_items.append((i, item))
 
-    batches: List[List[Dict[str, Any]]] = []
-    batch_size = 40
-    for start in range(0, len(insight_items), batch_size):
-        batch = insight_items[start : start + batch_size]
-        batches.append(await cluster_insight_batch(batch))
+    flat: List[Dict[str, Any]] = []
+    for doc_idx, item in insight_items:
+        record = dict(item)
+        record["文档编号"] = doc_idx
+        flat.append(record)
 
-    theme_text = await merge_theme_batches(batches)
+    merged = merge_by_function(flat)
+
+    sections: List[str] = []
+    for module, items in merged.items():
+        items.sort(key=lambda x: x.get("发布时间", ""))
+        lines = [f"### {module}", "", "| 发布时间 | 适用条件 | 系统行为 | 例外或限制 |", "|----------|----------|----------|----------|"]
+        for it in items:
+            lines.append(f"| {it.get('发布时间', '')} | {it.get('适用条件', '')} | {it.get('系统行为', '')} | {it.get('例外或限制', '')} |")
+        quotes = [f"原文（{it.get('发布时间', '')}）：“{it.get('原文摘录', '').strip()}”[{it.get('文档编号')}]" for it in items if str(it.get("原文摘录", "")).strip()]
+        if quotes:
+            lines.append("")
+            lines.extend(f"> {q}" for q in quotes)
+        sections.append("\n".join(lines))
+
+    theme_text = "\n\n".join(sections)
     if not theme_text.strip():
         theme_text = "未查到相关内容"
 
     summary_prompt = (
-        "请根据提问整理调研的背景与目标，概括下列内容的核心观点，并生成报告标题。"
+        "请根据提问整理本次调研的背景与目标，强调报告聚焦于需求文档中已落地的系统行为（As-Is），"
+        "以便后续差异分析和需求澄清。请概括下列内容的核心观点，并生成报告标题。"
         "仅以 JSON 格式回复，如："
         '{"调研背景与目标": "...", "核心观点": "...", "标题": "关于XXX调研报告"}}'
         "标题格式必须为：关于{{主题}}调研报告，主题不超过20个字。"
@@ -636,16 +646,13 @@ async def compose_report(
     )
     summary_data = parse_json_from_text(summary_text) or {}
     bg_goal = summary_data.get("调研背景与目标", "").strip()
-    short_summary = summary_data.get("核心观点", "").strip()
     title = summary_data.get("标题", "").strip().splitlines()[0]
-    short_summary = re.sub(r"^#+", "", short_summary).strip()
-    short_summary = re.sub(r"^本报告核心观点[:：\s]*", "", short_summary)
 
     body_lines = [
         "## 一、调研背景与目标",
         bg_goal,
         "",
-        "## 二、主要结论",
+        "## 二、系统现状",
         theme_text,
     ]
     body = "\n".join(body_lines)
