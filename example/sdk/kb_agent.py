@@ -199,18 +199,21 @@ def parse_json_from_text(text: str) -> Any:
     text = text.strip()
     # Remove fenced code block markers such as ```json ... ```
     text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"```$", "", text).strip()
+    text = re.sub(r"```\s*$", "", text).strip()
     # Strip markdown style links which may break JSON
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
 
+    decoder = json.JSONDecoder()
     try:
-        return json.loads(text)
+        obj, _ = decoder.raw_decode(text)
+        return obj
     except Exception:
-        match = re.search(r"\{.*?\}|\[.*?\]", text, flags=re.S)
+        match = re.search(r"\{.*\}|\[.*\]", text, flags=re.S)
         if match:
             cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match.group(0))
             try:
-                return json.loads(cleaned)
+                obj, _ = decoder.raw_decode(cleaned)
+                return obj
             except Exception:
                 pass
         logging.error("JSON 解析失败: %s", text)
@@ -263,8 +266,8 @@ def doc_has_content(insight: List[Dict[str, str]] | Any) -> bool:
     for item in insight:
         if not isinstance(item, dict):
             continue
-        behavior = str(item.get("系统行为", "")).strip()
-        if behavior:
+        viewpoint = str(item.get("观点", "")).strip()
+        if viewpoint:
             return True
     return False
 
@@ -586,6 +589,7 @@ async def compose_report(
     global TOKENS_IN, TOKENS_OUT, MODELS_USED
 
     docs: List[Tuple[int, str, str, List[Dict[str, str]]]] = []
+    doc_idx_map: Dict[Tuple[str, str], int] = {}
     idx = 1
     for (doc_id, name), insight in zip(references, insights):
         if not insight:
@@ -594,6 +598,7 @@ async def compose_report(
             logging.info("文档 %s 无有效内容，跳过", name)
             continue
         pub = insight[0].get("发布时间", "") if isinstance(insight, list) and insight else ""
+        doc_idx_map[(doc_id, name)] = idx
         docs.append((idx, name, pub, insight))
         idx += 1
 
