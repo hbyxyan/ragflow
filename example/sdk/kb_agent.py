@@ -534,7 +534,7 @@ async def analyze_document(
     prompt = (
         f"请结合问题：{question}\n"
         "严格分析下列文档，仅返回与问题直接、明确相关的insight，不相关内容严禁返回。\n"
-        "每个insight必须明确说明与问题之间的具体关联性，不能泛泛表述。\n"
+        "每个insight必须包含足够多与问题相关的原文摘要，以说明与问题之间的具体关联，不能泛泛表述及联想。\n"
         "仅以JSON数组形式返回，字段包括“发布时间”、“观点”、“原文摘录”、“说明”，格式严谨。\n"
         "若无直接相关内容，必须返回空数组 []，禁止返回无关信息。\n" + json.dumps(example, ensure_ascii=False) + "\n"
         "特别注意：文档通常仅描述部分修改或新增逻辑，请不要假设它覆盖全部流程；"
@@ -574,6 +574,8 @@ async def compose_report(
     question: str,
     insights: List[Dict[str, str]],
     references: List[Tuple[str, str]],
+    keywords: List[str],
+    retrieved: int,
 ) -> tuple[str, str]:
     """综合所有分析结果并生成 Markdown 报告"""
 
@@ -617,6 +619,8 @@ async def compose_report(
         batches.append(await cluster_insight_batch(batch))
 
     theme_text = await merge_theme_batches(batches)
+    if not theme_text.strip():
+        theme_text = "未查到相关内容"
 
     summary_prompt = (
         "请根据提问整理调研的背景与目标，概括下列内容的核心观点，并生成报告标题。"
@@ -654,8 +658,18 @@ async def compose_report(
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
-    meta = f"**调查时间**：{end_time_str}  \n**耗时**：{mins}分{secs}秒  \n**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n**费用**：{TOTAL_COST:.4f}  \n**模型**：{','.join(MODELS_USED)}\n---"
-    report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}\n\n## 四、引用文档\n" + "\n\n".join(doc_lines) + "\n"
+    meta = (
+        f"**关键词**：{', '.join(keywords)}  \n"
+        f"**累计检索**：{retrieved}篇  \n"
+        f"**调查时间**：{end_time_str}  \n"
+        f"**耗时**：{mins}分{secs}秒  \n"
+        f"**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n"
+        f"**费用**：{TOTAL_COST:.4f}  \n"
+        f"**模型**：{','.join(MODELS_USED)}\n---"
+    )
+    report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}"
+    if doc_lines:
+        report += "\n\n## 三、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
     return report, title
 
@@ -740,7 +754,7 @@ async def main(question: str):
             break
 
     references, insights = deduplicate_references(references, insights)
-    report, title = await compose_report(question, insights, references)
+    report, title = await compose_report(question, insights, references, keywords, len(all_doc_ids))
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
