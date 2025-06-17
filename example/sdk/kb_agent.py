@@ -263,8 +263,8 @@ def doc_has_content(insight: List[Dict[str, str]] | Any) -> bool:
     for item in insight:
         if not isinstance(item, dict):
             continue
-        point = str(item.get("观点", "")).strip()
-        if point:
+        behavior = str(item.get("系统行为", "")).strip()
+        if behavior:
             return True
     return False
 
