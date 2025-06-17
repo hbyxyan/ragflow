@@ -190,34 +190,23 @@ def count_tokens(text: str) -> int:
 
 
 def parse_json_from_text(text: str) -> Any:
-    """从文本中提取 JSON 对象或数组并解析。
-
-    清除 ```json 包裹及 Markdown 链接，定位首个 JSON 片段并尝试解析，
-    如失败则返回 ``None``。
-    """
+    """从文本中提取 JSON 对象或数组并解析"""
 
     text = text.strip()
-    # Remove fenced code block markers such as ```json ... ```
-    text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"```\s*$", "", text).strip()
-    # Strip markdown style links which may break JSON
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-
-    decoder = json.JSONDecoder()
+    # 尝试快速解析
     try:
-        obj, _ = decoder.raw_decode(text)
-        return obj
+        return json.loads(text)
     except Exception:
-        match = re.search(r"\{.*\}|\[.*\]", text, flags=re.S)
-        if match:
-            cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match.group(0))
-            try:
-                obj, _ = decoder.raw_decode(cleaned)
-                return obj
-            except Exception:
-                pass
-        logging.error("JSON 解析失败: %s", text)
-        return None
+        pass
+    # 尝试用正则提取第一个 JSON 结构
+    match = re.search(r"(\[.*?\]|\{.*?\})", text, flags=re.S)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except Exception:
+            logging.error("匹配到 JSON 片段但解析失败: %s", match.group(1))
+    logging.error("JSON 解析失败: %s", text)
+    return None
 
 
 def _canonical_doc_key(name: str) -> tuple[str, str]:
