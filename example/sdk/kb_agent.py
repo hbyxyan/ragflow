@@ -727,11 +727,40 @@ async def main(question: str):
     # 使用 pandoc 转为 HTML 文档并立即打开
     html_name = filename.rsplit(".", 1)[0] + ".html"
     html_path = os.path.join(report_dir, html_name)
+    css_path = os.path.join(report_dir, "style.css")
+
+    # 如果 style.css 不存在，写入默认样式
+    if not os.path.exists(css_path):
+        css_content = """
+table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
+th, td {
+  border: 1px solid #ccc;
+  padding: 8px;
+  word-wrap: break-word;
+  vertical-align: top;
+  font-size: 14px;
+}
+"""
+        Path(css_path).write_text(css_content, encoding="utf-8")
+
     try:
         await asyncio.to_thread(
             subprocess.run,
-            ["pandoc", os.path.join(report_dir, filename), "-o", html_path],
+            [
+                "pandoc",
+                os.path.join(report_dir, filename),
+                "-s",
+                "-c",
+                "style.css",
+                "-o",
+                html_path,
+            ],
             check=True,
+            cwd=report_dir,
         )
         if sys.platform.startswith("darwin"):
             await asyncio.to_thread(subprocess.run, ["open", html_path])
