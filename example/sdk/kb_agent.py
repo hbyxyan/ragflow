@@ -124,15 +124,6 @@ if MODEL_PRICES_ENV:
 else:
     MODEL_PRICES = DEFAULT_MODEL_PRICES
 
-# 默认需要归纳的业务要素
-DEFAULT_ELEMENT_KEYS = [
-    "触发方式",
-    "处理流程",
-    "系统规则",
-    "字段与界面",
-    "通知与输出",
-]
-
 
 async def call_chat(
     *,
@@ -339,6 +330,78 @@ async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
     return fold_snippet_section(current[0])
 
 
+async def cluster_insight_batch(items: List[Tuple[int, Dict[str, str]]]) -> List[Dict[str, Any]]:
+    """Group a batch of insights by theme using the LLM."""
+
+    records = [
+        {
+            "文档编号": i,
+            "发布时间": d.get("发布时间", ""),
+            "观点": d.get("观点", ""),
+            "说明": d.get("说明", ""),
+            "原文摘录": d.get("原文摘录", ""),
+        }
+        for i, d in items
+    ]
+    prompt = (
+        "请对这些 insight 进行主题聚类和归纳总结：\n\n"
+        "对每个主题，输出以下字段：\n"
+        "- 主题：一句话描述聚合逻辑点。\n"
+        "- 观点摘要：简要列出该主题下的主要观点（合并重复）。\n"
+        "- 共识（可选）：若多个 insight 在条件和时间上完全一致，可列为共识。\n"
+        "- 差异说明：若观点不同但适用于不同时间或业务，请说明为并存逻辑。\n"
+        "- 代表原文：列出1~3条原文摘录，标注文档编号。\n\n"
+        "⚠️ 特别说明：不同发布时间的 insight 属于时间演进，不是冲突；"
+        "不同业务条线或条件下的规则可能并存，不能作为分歧；"
+        "只有当多个 insight 对相同业务背景且同一时间点逻辑完全相反时，才视为冲突。\n"
+        "仅以 JSON 数组返回，不要添加其他说明。\n"
+        "数据：\n" + json.dumps(records, ensure_ascii=False)
+    )
+    tokens = count_tokens(prompt)
+    model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
+    use_long = model == OPENAI_LONG_MODEL
+    max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
+    text = await call_chat(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        use_long=use_long,
+    )
+    data = parse_json_from_text(text)
+    if not isinstance(data, list):
+        logging.error("主题聚类返回格式异常: %s", text)
+        return []
+    return data
+
+
+async def merge_theme_batches(batches: List[List[Dict[str, Any]]]) -> str:
+    """Merge multiple theme batches into a markdown report body."""
+
+    joined = "\n".join(json.dumps(b, ensure_ascii=False) for b in batches if b)
+    if not joined:
+        return ""
+    prompt = (
+        "下面是多批次的主题归纳结果，请合并重复或近似主题，"
+        "整理为 Markdown 二级标题（## 主题名）的报告内容。"
+        "每个主题下用自然语言段落综合描述观点分布、背景差异、共识点等，"
+        "若存在差异，请说明是否因发布时间或业务范围差异而并存。"
+        "保留代表性原文作为引用，文档编号保持原样。"
+        "仅返回 Markdown 文本，不要添加其他说明。\n"
+        "数据：\n" + joined
+    )
+    tokens = count_tokens(prompt)
+    model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
+    use_long = model == OPENAI_LONG_MODEL
+    max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
+    text = await call_chat(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        use_long=use_long,
+    )
+    return text.strip()
+
+
 async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     """使用长文本模型从问题中提取关键词"""
 
@@ -371,40 +434,6 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     keywords = keywords[:limit]
     logging.info("[LLM] 解析后的关键词: %s", keywords)
     return keywords
-
-
-async def extract_extra_elements(question: str, base_elements: List[str], limit: int = 3) -> List[str]:
-    """Determine additional elements to summarize based on the question.
-
-    This step uses the long-context model to better handle lengthy questions.
-    """
-
-    prompt = (
-        "你是需求分析助理，请根据下列问题判断除了常规要素外还需要额外归纳哪些要素。\n"
-        f"常规要素包括：{','.join(base_elements)}。\n"
-        f"若问题中提及其他关键维度，请列出这些要素名称，不超过{limit}个。\n"
-        "若无额外要素，请返回空数组。仅以 JSON 数组返回，不要添加解释。\n"
-        "问题：" + question
-    )
-    text = await call_chat(
-        model=OPENAI_LONG_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        use_long=True,
-    )
-    try:
-        elems = json.loads(text)
-        if not isinstance(elems, list):
-            raise ValueError
-    except Exception:
-        elems = [x.strip() for x in re.split(r"[,\s]+", text) if x.strip()]
-    extra = []
-    for e in elems:
-        if e not in base_elements and e not in extra:
-            extra.append(e)
-        if len(extra) >= limit:
-            break
-    logging.info("[LLM] 解析出的额外要素: %s", extra)
-    return extra
 
 
 async def extract_keywords_from_insights(
@@ -575,8 +604,7 @@ async def compose_report(
     question: str,
     insights: List[Dict[str, str]],
     references: List[Tuple[str, str]],
-    element_keys: List[str] | None = None,
-) -> tuple[str, str, Dict[str, str]]:
+) -> tuple[str, str]:
     """综合所有分析结果并生成 Markdown 报告"""
 
     def has_value(obj: Dict) -> bool:
@@ -598,70 +626,34 @@ async def compose_report(
         if not doc_has_content(insight):
             logging.info("文档 %s 无有效内容，跳过", name)
             continue
-        if isinstance(insight, list) and insight:
-            pub = insight[0].get("发布时间", "")
-        else:
-            pub = ""
+        pub = insight[0].get("发布时间", "") if isinstance(insight, list) and insight else ""
         docs.append((idx, name, pub, insight))
         idx += 1
 
-    if element_keys is None:
-        element_keys = ["相关观点"]
-
     doc_list_full: List[Tuple[int, str, str]] = []
-    elements: Dict[str, List[Tuple[int, str]]] = {"相关观点": []}
+    insight_items: List[Tuple[int, Dict[str, str]]] = []
 
     for i, name, pub, insight in docs:
         doc_list_full.append((i, name, pub))
         if not isinstance(insight, list):
             continue
         for item in insight:
-            parts = [item.get("观点", "").strip(), item.get("说明", "").strip(), item.get("原文摘录", "").strip()]
-            text = " ".join(p for p in parts if p)
-            if text:
-                elements["相关观点"].append((i, text))
+            insight_items.append((i, item))
 
-    element_summaries: Dict[str, str] = {}
-    tasks = [reduce_element(key, items) for key, items in elements.items() if items]
-    results = await asyncio.gather(*tasks)
-    for key, summary in zip([k for k, v in elements.items() if v], results):
-        element_summaries[key] = summary
+    batches: List[List[Dict[str, Any]]] = []
+    batch_size = 40
+    for start in range(0, len(insight_items), batch_size):
+        batch = insight_items[start : start + batch_size]
+        batches.append(await cluster_insight_batch(batch))
 
-    context_for_overall = "\n\n".join(f"{k}:\n{v}" for k, v in element_summaries.items() if v)
-    overall_prompt = (
-        f"请基于以下各要素的分条归纳内容，生成“主要结论与摘要”部分，严格使用如下结构：\n"
-        "#### 2.1 共性做法\n- 共性1...\n\n"
-        "#### 2.2 分歧与争议\n| 主题 | 观点 |\n| ---- | ---- |\n| 分歧1 | ... |\n\n"
-        "#### 2.3 规范化建议\n- 建议1...\n\n"
-        "其中“2.2 分歧与争议”部分必须使用 Markdown 表格呈现。\n"
-        "仅按上述结构输出，不得添加其他说明或段落。所有文档编号用方括号标注（如[1]）。\n"
-        f"内容如下：\n{context_for_overall}"
-    )
-    model = OPENAI_LONG_MODEL if count_tokens(overall_prompt) > 95000 else OPENAI_MODEL
-    use_long = model == OPENAI_LONG_MODEL
-    max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-    overall_patterns = [
-        r"#### 2\.1 共性做法",
-        r"#### 2\.2 分歧与争议",
-        r"#### 2\.3 规范化建议",
-    ]
-    overall_summary = await call_chat_checked(
-        model=model,
-        messages=[{"role": "user", "content": overall_prompt}],
-        max_tokens=max_tokens,
-        use_long=use_long,
-        patterns=overall_patterns,
-    )
-    m = re.search(r"(#### 2\.1 共性做法.*)", overall_summary, flags=re.S)
-    if m:
-        overall_summary = m.group(1).strip()
+    theme_text = await merge_theme_batches(batches)
 
     summary_prompt = (
         "请根据提问整理调研的背景与目标，概括下列内容的核心观点，并生成报告标题。"
         "仅以 JSON 格式回复，如："
-        '{"调研背景与目标": "...", "核心观点": "...", "标题": "关于XXX调研报告"}。'
+        '{"调研背景与目标": "...", "核心观点": "...", "标题": "关于XXX调研报告"}}'
         "标题格式必须为：关于{{主题}}调研报告，主题不超过20个字。"
-        "不得添加其他说明。\n问题：" + question + "\n内容:\n" + overall_summary
+        "不得添加其他说明。\n问题：" + question + "\n内容:\n" + theme_text
     )
     summary_text = await call_chat_checked(
         model=OPENAI_MODEL,
@@ -679,20 +671,9 @@ async def compose_report(
         "## 一、调研背景与目标",
         bg_goal,
         "",
-        "## 二、主要结论与摘要",
-        f"本报告核心观点：{short_summary}",
-        "",
-        overall_summary,
-        "",
-        "## 三、要素逐项归纳",
+        "## 二、主题归纳",
+        theme_text,
     ]
-    idx_elem = 1
-    for key in element_keys:
-        summary = element_summaries.get(key, "")
-        if summary:
-            body_lines.append(f"### 3.{idx_elem} {key}")
-            body_lines.append(summary)
-            idx_elem += 1
     body = "\n".join(body_lines)
 
     title_pattern = r"^关于.{1,20}调研报告$"
@@ -706,7 +687,7 @@ async def compose_report(
     meta = f"**调查时间**：{end_time_str}  \n**耗时**：{mins}分{secs}秒  \n**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n**费用**：{TOTAL_COST:.4f}  \n**模型**：{','.join(MODELS_USED)}\n---"
     report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}\n\n## 四、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
-    return report, title, element_summaries
+    return report, title
 
 
 # ---------- 主流程 ----------
@@ -721,8 +702,6 @@ async def main(question: str):
     # 初始化 RAGFlow 客户端并提取初始关键词
     rag = RAGFlow(api_key=RAGFLOW_API_KEY, base_url=RAGFLOW_HOST)
     keywords = await extract_keywords(question)
-    extra_elements = await extract_extra_elements(question, DEFAULT_ELEMENT_KEYS)
-    element_keys = DEFAULT_ELEMENT_KEYS + [e for e in extra_elements if e not in DEFAULT_ELEMENT_KEYS]
 
     # Step2：在知识库1中循环检索
     logging.info("开始在知识库1中检索")
@@ -774,7 +753,7 @@ async def main(question: str):
 
         async def sem_analyze(md: str, name: str):
             async with sem:
-                return await analyze_document(question, md, name, element_keys)
+                return await analyze_document(question, md, name)
 
         tasks = [sem_analyze(md, name) for _, name, md in documents]
         results = await asyncio.gather(*tasks)
@@ -791,7 +770,7 @@ async def main(question: str):
             break
 
     references, insights = deduplicate_references(references, insights)
-    report, title, element_summaries = await compose_report(question, insights, references, element_keys)
+    report, title = await compose_report(question, insights, references)
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
@@ -809,17 +788,6 @@ async def main(question: str):
         report,
         encoding="utf-8",
     )
-    # 保存各要素汇总
-    for key, summary in element_summaries.items():
-        safe_key = re.sub(r"[\\/:*?\"<>|\s]", "_", key)
-        batch_name = f"{safe_key}.md"
-        if batch_name == filename:
-            batch_name = f"{safe_key}_summary.md"
-        await asyncio.to_thread(
-            Path(os.path.join(report_dir, batch_name)).write_text,
-            summary,
-            encoding="utf-8",
-        )
     logging.info("已上传报告 %s", filename)
 
     # 使用 pandoc 转为 HTML 文档并立即打开
