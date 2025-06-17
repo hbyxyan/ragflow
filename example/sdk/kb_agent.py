@@ -190,25 +190,25 @@ def count_tokens(text: str) -> int:
 
 
 def parse_json_from_text(text: str) -> Any:
-    """从文本中提取 JSON 对象或数组并解析.
+    """从文本中提取 JSON 对象或数组并解析。
 
-    处理 LLM 输出中可能出现的 ```json 包裹或 Markdown 链接，
-    尝试解析首个 JSON 片段并在失败时返回 None。
+    清除 ```json 包裹及 Markdown 链接，定位首个 JSON 片段并尝试解析，
+    如失败则返回 ``None``。
     """
 
     text = text.strip()
-    # Remove fenced code blocks like ```json ... ```
+    # Remove fenced code block markers such as ```json ... ```
     text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.IGNORECASE)
     text = re.sub(r"```$", "", text).strip()
-    # Strip markdown style links to avoid breaking JSON parsing
+    # Strip markdown style links which may break JSON
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
 
     try:
         return json.loads(text)
     except Exception:
-        m = re.search(r"(\{.*\}|\[.*\])", text, flags=re.S)
-        if m:
-            cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", m.group(1))
+        match = re.search(r"\{.*?\}|\[.*?\]", text, flags=re.S)
+        if match:
+            cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", match.group(0))
             try:
                 return json.loads(cleaned)
             except Exception:
@@ -517,25 +517,18 @@ async def analyze_document(
     example = [
         {
             "发布时间": "20200101",
-            "观点": "……",
-            "原文摘录": "……",
-            "说明": "……",
+            "观点": "样例观点",
+            "原文摘录": "样例原文",
+            "说明": "样例说明",
         }
     ]
     prompt = (
-        "请你从以下文档中提取所有与提问直接相关的关键业务信息点（称为 insight），"
-        "并以 JSON 数组形式给出。一个文档可能包含多个 insight，每个 insight 聚焦一个独立业务点或规则描述。"
-        "数组每个元素的字段说明如下：\n"
-        "- 发布时间：规则生效时间或文档时间（如能识别）。\n"
-        "- 观点：该 insight 的核心结论或业务描述。\n"
-        "- 原文摘录：支撑该观点的关键原文片段（如有）。\n"
-        "- 说明：解释观点与提问的关联，适用范围或背景。\n"
-        "特别注意：文档内容通常是对现有系统的部分修改或新增逻辑，请不要假设它覆盖全部流程；"
-        "若文档描述“将由A方式改为B方式”，请明确指出这是对A的修改而非覆盖；"
-        "多个 insight 可以描述同一业务点在不同时间或条件下的变化，属于并存逻辑而非冲突。\n"
-        "仅返回 JSON，不要添加任何解释。\n"
-        "若原文摘录中含有 Markdown 链接等符号，请转换为纯文本或转义，以保证 JSON 正确解析。\n"
-        "示例：\n" + json.dumps(example, ensure_ascii=False) + "\n\n文档内容：\n" + md_text
+        "请根据以下文档内容提取所有与问题直接相关的 insight，以严格的 JSON 数组形式返回。"
+        '每个数组元素包含 "发布时间"、"观点"、"原文摘录"、"说明" 四个字段，字段之间不得夹杂其他内容。\n' + json.dumps(example, ensure_ascii=False) + "\n"
+        "特别注意：文档通常仅描述部分修改或新增逻辑，请不要假设它覆盖全部流程；"
+        "若文档说明由 A 改为 B，应明确这是对 A 的修改；多个 insight 可描述同一业务在不同时间或条件下的变化，并不视为冲突。\n"
+        "严禁在 JSON 数组之外输出任何字符或换行，所有引号等符号需正确转义，若无相关内容返回 []。\n"
+        "文档内容:\n" + md_text
     )
     tokens = count_tokens(prompt)
     model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
