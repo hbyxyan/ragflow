@@ -632,24 +632,24 @@ async def compose_report(
         theme_text = "未查到相关内容"
 
     summary_prompt = (
-        "请根据提问整理本次调研的背景与目标，强调报告聚焦于需求文档中已落地的系统行为（As-Is），"
-        "以便后续差异分析和需求澄清。请概括下列内容的核心观点，并生成报告标题。"
+        "请根据提问整理本次报告的背景与目标，强调报告聚焦于需求文档中已落地的系统现状，"
+        "以便后续差异分析和需求澄清。请生成报告标题。"
         "仅以 JSON 格式回复，如："
-        '{"调研背景与目标": "...", "核心观点": "...", "标题": "关于XXX调研报告"}}'
-        "标题格式必须为：关于{{主题}}调研报告，主题不超过20个字。"
+        '{"背景与目标": "...", "标题": "关于XXX现状分析报告"}'
+        "标题格式必须为：关于{{主题}}现状分析报告，主题不超过20个字。"
         "不得添加其他说明。\n问题：" + question + "\n内容:\n" + theme_text
     )
     summary_text = await call_chat_checked(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": summary_prompt}],
-        patterns=[r"调研背景与目标", r"核心观点", r"标题"],
+        patterns=[r"背景与目标", r"标题"],
     )
     summary_data = parse_json_from_text(summary_text) or {}
-    bg_goal = summary_data.get("调研背景与目标", "").strip()
+    bg_goal = summary_data.get("背景与目标", "").strip()
     title = summary_data.get("标题", "").strip().splitlines()[0]
 
     body_lines = [
-        "## 一、调研背景与目标",
+        "## 一、背景与目标",
         bg_goal,
         "",
         "## 二、系统现状",
@@ -657,7 +657,7 @@ async def compose_report(
     ]
     body = "\n".join(body_lines)
 
-    title_pattern = r"^关于.{1,20}调研报告$"
+    title_pattern = r"^关于.{1,20}现状分析报告$"
     if not re.match(title_pattern, title):
         logging.warning("标题格式不符: %s", title)
 
@@ -685,7 +685,7 @@ async def compose_report(
 
 
 async def main(question: str):
-    """根据输入问题生成调研报告"""
+    """根据输入问题生成现状分析报告"""
     if not (RAGFLOW_API_KEY and KB1_ID and KB2_ID and OPENAI_API_KEY):
         raise RuntimeError("Required environment variables: RAGFLOW_API_KEY, KB1_ID, KB2_ID, OPENAI_API_KEY")
 
