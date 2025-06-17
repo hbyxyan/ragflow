@@ -266,8 +266,8 @@ def doc_has_content(insight: List[Dict[str, str]] | Any) -> bool:
     for item in insight:
         if not isinstance(item, dict):
             continue
-        action = str(item.get("系统行为", "")).strip()
-        if action:
+        viewpoint = str(item.get("观点", "")).strip()
+        if viewpoint:
             return True
     return False
 
@@ -276,6 +276,15 @@ def sanitize_doc_name(name: str) -> str:
     """Escape brackets in document names to avoid Markdown links."""
 
     return name.replace("[", "\\[").replace("]", "\\]")
+
+
+def sanitize_quote(text: str) -> str:
+    """Escape Markdown formatting characters in quoted text."""
+
+    special_chars = "*`_"
+    for ch in special_chars:
+        text = text.replace(ch, f"\\{ch}")
+    return text
 
 
 def merge_by_function(insights: List[Dict[str, Any]]) -> Dict[str, List[Dict]]:
@@ -555,11 +564,20 @@ async def compose_report(
         lines = [f"### {module}", "", "| 发布时间 | 适用条件 | 系统行为 | 例外或限制 |", "|----------|----------|----------|----------|"]
         for it in items:
             lines.append(f"| {it.get('发布时间', '')} | {it.get('适用条件', '')} | {it.get('系统行为', '')} | {it.get('例外或限制', '')} |")
-        quotes = [f"原文（{it.get('发布时间', '')}）：“{it.get('原文摘录', '').strip()}”[{it.get('文档编号')}]" for it in items if str(it.get("原文摘录", "")).strip()]
+        quotes = []
+        for it in items:
+            raw = str(it.get("原文摘录", "")).strip()
+            if not raw:
+                continue
+            qt = sanitize_quote(raw)
+            qstr = f"原文（{it.get('发布时间', '')}）：“{qt}”[文档编号:{it.get('文档编号')}]"
+            quotes.append(qstr)
         if quotes:
             lines.append("")
-            for q in quotes:
+            for idx, q in enumerate(quotes):
                 lines.append(f"> {q}")
+                if idx < len(quotes) - 1:
+                    lines.append(">")
         sections.append("\n".join(lines))
 
     theme_text = "\n\n".join(sections)
@@ -596,7 +614,7 @@ async def compose_report(
     if not re.match(title_pattern, title):
         logging.warning("标题格式不符: %s", title)
 
-    doc_lines = [f"文档编号：{i}. {sanitize_doc_name(name)}" for i, name, _ in doc_list_full]
+    doc_lines = [f"[{i}] {sanitize_doc_name(name)}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
