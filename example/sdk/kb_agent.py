@@ -190,16 +190,30 @@ def count_tokens(text: str) -> int:
 
 
 def parse_json_from_text(text: str) -> Any:
-    """从文本中提取 JSON 对象或数组并解析."""
+    """从文本中提取 JSON 对象或数组并解析.
 
-    m = re.search(r"\{.*?\}|\[.*?\]", text, flags=re.S)
-    if not m:
-        logging.error("未找到 JSON 片段")
-        return None
+    处理 LLM 输出中可能出现的 ```json 包裹或 Markdown 链接，
+    尝试解析首个 JSON 片段并在失败时返回 None。
+    """
+
+    text = text.strip()
+    # Remove fenced code blocks like ```json ... ```
+    text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"```$", "", text).strip()
+    # Strip markdown style links to avoid breaking JSON parsing
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
     try:
-        return json.loads(m.group(0))
-    except Exception as exc:
-        logging.error("JSON 解析失败: %s", exc)
+        return json.loads(text)
+    except Exception:
+        m = re.search(r"(\{.*\}|\[.*\])", text, flags=re.S)
+        if m:
+            cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", m.group(1))
+            try:
+                return json.loads(cleaned)
+            except Exception:
+                pass
+        logging.error("JSON 解析失败: %s", text)
         return None
 
 
@@ -303,6 +317,7 @@ async def cluster_insight_batch(items: List[Tuple[int, Dict[str, str]]]) -> List
         "不同业务条线或条件下的规则可能并存，不能作为分歧；"
         "只有当多个 insight 对相同业务背景且同一时间点逻辑完全相反时，才视为冲突。\n"
         "仅以 JSON 数组返回，不要添加其他说明。\n"
+        "若原文中含有 Markdown 链接等特殊格式，请转为纯文本或转义，确保 JSON 可正常解析。\n"
         "数据：\n" + json.dumps(records, ensure_ascii=False)
     )
     tokens = count_tokens(prompt)
@@ -519,6 +534,7 @@ async def analyze_document(
         "若文档描述“将由A方式改为B方式”，请明确指出这是对A的修改而非覆盖；"
         "多个 insight 可以描述同一业务点在不同时间或条件下的变化，属于并存逻辑而非冲突。\n"
         "仅返回 JSON，不要添加任何解释。\n"
+        "若原文摘录中含有 Markdown 链接等符号，请转换为纯文本或转义，以保证 JSON 正确解析。\n"
         "示例：\n" + json.dumps(example, ensure_ascii=False) + "\n\n文档内容：\n" + md_text
     )
     tokens = count_tokens(prompt)
