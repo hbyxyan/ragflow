@@ -226,10 +226,10 @@ def _canonical_doc_key(name: str) -> tuple[str, str]:
 
 def deduplicate_references(
     refs: List[Tuple[str, str]],
-    insights: List[Dict[str, str]],
-) -> tuple[List[Tuple[str, str]], List[Dict[str, str]]]:
+    insights: List[Any],
+) -> tuple[List[Tuple[str, str]], List[Any]]:
     """Remove duplicate docs keeping the latest by date."""
-    mapping: Dict[str, Tuple[str, str, Dict[str, str], str]] = {}
+    mapping: Dict[str, Tuple[str, str, Any, str]] = {}
     order: List[str] = []
     for (doc_id, name), insight in zip(refs, insights):
         date, key = _canonical_doc_key(name)
@@ -239,7 +239,7 @@ def deduplicate_references(
             if cur is None:
                 order.append(key)
     dedup_refs: List[Tuple[str, str]] = []
-    dedup_insights: List[Dict[str, str]] = []
+    dedup_insights: List[Any] = []
     for key in order:
         doc_id, name, insight, _ = mapping[key]
         dedup_refs.append((doc_id, name))
