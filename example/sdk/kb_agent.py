@@ -278,58 +278,6 @@ def fold_snippet_section(text: str) -> str:
     return text[: m.start()] + header + folded
 
 
-async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
-    """Recursively summarize a specific element across documents."""
-
-    lines = [f"{i}. {text.strip()}" for i, text in items if text.strip()]
-    if not lines:
-        return ""
-
-    async def summarize_once(block: List[str]) -> str:
-        context = "\n".join(block)
-        prompt = (
-            f"请根据以下“{element}”字段内容，严格按照如下结构分条归纳：\n\n"
-            "#### 1. 通用做法\n"
-            "- 仅列本要素的主要共性做法。\n\n"
-            "#### 2. 分歧与争议\n"
-            "- 每条写明具体分歧/争议点，明确不同做法并标注涉及文档编号（如[1][4]）。\n\n"
-            "#### 3. 典型原文摘录\n"
-            "> 每条仅列一句关键原文，标注文档编号（如[2]）。\n"
-            "> 如内容多，可只选最具代表性的2-3条。\n\n"
-            "回复格式务必严格与上方示例对齐，不要出现任何说明或多余结构。\n"
-            "字段内容如下（每条已标明文档编号）：\n\n" + context
-        )
-        tokens = count_tokens(prompt)
-        model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
-        use_long = model == OPENAI_LONG_MODEL
-        max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-        logging.info("[LLM] 汇总 %s，模型 %s，输入 %d tokens", element, model, tokens)
-        patterns = [
-            r"#### 1\. 通用做法",
-            r"#### 2\. 分歧与争议",
-            r"#### 3\. 典型原文摘录",
-        ]
-        text = await call_chat_checked(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-            use_long=use_long,
-            patterns=patterns,
-        )
-        m = re.search(r"(#### 1\. 通用做法.*)", text, flags=re.S)
-        return m.group(1).strip() if m else text.strip()
-
-    chunk_size = 20
-    current = lines
-    while len(current) > 1:
-        summaries: List[str] = []
-        for start in range(0, len(current), chunk_size):
-            chunk = current[start : start + chunk_size]
-            summaries.append(await summarize_once(chunk))
-        current = summaries
-    return fold_snippet_section(current[0])
-
-
 async def cluster_insight_batch(items: List[Tuple[int, Dict[str, str]]]) -> List[Dict[str, Any]]:
     """Group a batch of insights by theme using the LLM."""
 
@@ -382,7 +330,7 @@ async def merge_theme_batches(batches: List[List[Dict[str, Any]]]) -> str:
         return ""
     prompt = (
         "下面是多批次的主题归纳结果，请合并重复或近似主题，"
-        "整理为 Markdown 二级标题（## 主题名）的报告内容。"
+        "整理为 Markdown 三级标题（### 主题名）的报告内容。"
         "每个主题下用自然语言段落综合描述观点分布、背景差异、共识点等，"
         "若存在差异，请说明是否因发布时间或业务范围差异而并存。"
         "保留代表性原文作为引用，文档编号保持原样。"
@@ -671,7 +619,7 @@ async def compose_report(
         "## 一、调研背景与目标",
         bg_goal,
         "",
-        "## 二、主题归纳",
+        "## 二、主要结论",
         theme_text,
     ]
     body = "\n".join(body_lines)
