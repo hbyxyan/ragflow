@@ -455,6 +455,7 @@ async def analyze_document(
         "- 仅提取系统已明确实现的功能，不包含规划中、建议类内容。\n"
         "- 信息必须与问题存在直接关联，无关内容禁止返回。\n"
         "- 每条信息必须提供对应原文摘录，确保可验证与问题相关。\n"
+        "  如原文包含计算公式，请完整摘录该公式，不得省略。\n"
         "- 禁止联想或补全未明确写明的内容。\n"
         "- 对“同某章节”“见前述章节”的引用描述，必须提取引用部分对应的逻辑，如无法获取具体内容则放弃这一部分的提取。\n"
         "- 严禁输出 JSON 之外的任何字符。\n\n"
@@ -727,25 +728,6 @@ async def main(question: str):
     # 使用 pandoc 转为 HTML 文档并立即打开
     html_name = filename.rsplit(".", 1)[0] + ".html"
     html_path = os.path.join(report_dir, html_name)
-    css_path = os.path.join(report_dir, "style.css")
-
-    # 如果 style.css 不存在，写入默认样式
-    if not os.path.exists(css_path):
-        css_content = """
-table {
-  border-collapse: collapse;
-  width: 100%;
-  table-layout: fixed;
-}
-th, td {
-  border: 1px solid #ccc;
-  padding: 8px;
-  word-wrap: break-word;
-  vertical-align: top;
-  font-size: 14px;
-}
-"""
-        Path(css_path).write_text(css_content, encoding="utf-8")
 
     try:
         await asyncio.to_thread(
@@ -754,8 +736,6 @@ th, td {
                 "pandoc",
                 os.path.join(report_dir, filename),
                 "-s",
-                "-c",
-                "style.css",
                 "-o",
                 html_path,
             ],
