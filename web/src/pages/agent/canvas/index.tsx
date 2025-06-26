@@ -17,7 +17,6 @@ import {
   useHandleDrop,
   useSelectCanvasData,
   useValidateConnection,
-  useWatchNodeFormDataChange,
 } from '../hooks';
 import { useAddNode } from '../hooks/use-add-node';
 import { useBeforeDelete } from '../hooks/use-before-delete';
@@ -44,6 +43,7 @@ import { RetrievalNode } from './node/retrieval-node';
 import { RewriteNode } from './node/rewrite-node';
 import { SwitchNode } from './node/switch-node';
 import { TemplateNode } from './node/template-node';
+import { ToolNode } from './node/tool-node';
 
 const nodeTypes: NodeTypes = {
   ragNode: RagNode,
@@ -64,6 +64,7 @@ const nodeTypes: NodeTypes = {
   group: IterationNode,
   iterationStartNode: IterationStartNode,
   agentNode: AgentNode,
+  toolNode: ToolNode,
 };
 
 const edgeTypes = {
@@ -83,6 +84,8 @@ function AgentCanvas({ drawerVisible, hideDrawer }: IProps) {
     onEdgesChange,
     onNodesChange,
     onSelectionChange,
+    onEdgeMouseEnter,
+    onEdgeMouseLeave,
   } = useSelectCanvasData();
   const isValidConnection = useValidateConnection();
 
@@ -120,8 +123,6 @@ function AgentCanvas({ drawerVisible, hideDrawer }: IProps) {
 
   const { handleBeforeDelete } = useBeforeDelete();
 
-  useWatchNodeFormDataChange();
-
   const { addCanvasNode } = useAddNode(reactFlowInstance);
 
   useEffect(() => {
@@ -152,38 +153,42 @@ function AgentCanvas({ drawerVisible, hideDrawer }: IProps) {
           </marker>
         </defs>
       </svg>
-      <ReactFlow
-        connectionMode={ConnectionMode.Loose}
-        nodes={nodes}
-        onNodesChange={onNodesChange}
-        edges={edges}
-        onEdgesChange={onEdgesChange}
-        fitView
-        onConnect={onConnect}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        onDrop={onDrop}
-        onDragOver={onDragOver}
-        onNodeClick={onNodeClick}
-        onPaneClick={onPaneClick}
-        onInit={setReactFlowInstance}
-        onSelectionChange={onSelectionChange}
-        nodeOrigin={[0.5, 0]}
-        isValidConnection={isValidConnection}
-        defaultEdgeOptions={{
-          type: 'buttonEdge',
-          markerEnd: 'logo',
-          style: {
-            strokeWidth: 2,
-            stroke: 'rgb(202 197 245)',
-          },
-          zIndex: 1001, // https://github.com/xyflow/xyflow/discussions/3498
-        }}
-        deleteKeyCode={['Delete', 'Backspace']}
-        onBeforeDelete={handleBeforeDelete}
-      >
-        <Background />
-      </ReactFlow>
+      <AgentInstanceContext.Provider value={{ addCanvasNode }}>
+        <ReactFlow
+          connectionMode={ConnectionMode.Loose}
+          nodes={nodes}
+          onNodesChange={onNodesChange}
+          edges={edges}
+          onEdgesChange={onEdgesChange}
+          fitView
+          onConnect={onConnect}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          onNodeClick={onNodeClick}
+          onPaneClick={onPaneClick}
+          onInit={setReactFlowInstance}
+          onSelectionChange={onSelectionChange}
+          nodeOrigin={[0.5, 0]}
+          isValidConnection={isValidConnection}
+          onEdgeMouseEnter={onEdgeMouseEnter}
+          onEdgeMouseLeave={onEdgeMouseLeave}
+          defaultEdgeOptions={{
+            type: 'buttonEdge',
+            markerEnd: 'logo',
+            style: {
+              strokeWidth: 2,
+              stroke: 'rgb(202 197 245)',
+            },
+            zIndex: 1001, // https://github.com/xyflow/xyflow/discussions/3498
+          }}
+          deleteKeyCode={['Delete', 'Backspace']}
+          onBeforeDelete={handleBeforeDelete}
+        >
+          <Background />
+        </ReactFlow>
+      </AgentInstanceContext.Provider>
       {formDrawerVisible && (
         <AgentInstanceContext.Provider value={{ addCanvasNode }}>
           <FormSheet
