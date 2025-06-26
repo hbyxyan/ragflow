@@ -27,7 +27,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from openai import AsyncOpenAI
 from ragflow_sdk import RAGFlow
@@ -124,15 +124,6 @@ if MODEL_PRICES_ENV:
 else:
     MODEL_PRICES = DEFAULT_MODEL_PRICES
 
-# 默认需要归纳的业务要素
-DEFAULT_ELEMENT_KEYS = [
-    "触发方式",
-    "处理流程",
-    "系统规则",
-    "字段与界面",
-    "通知与输出",
-]
-
 
 async def call_chat(
     *,
@@ -198,15 +189,24 @@ def count_tokens(text: str) -> int:
     return len(encoding.encode(text))
 
 
-def parse_json_from_text(text: str) -> Dict[str, str]:
-    """从 LLM 回复中提取 JSON 对象并解析为字典"""
+def parse_json_from_text(text: str) -> Any:
+    """从文本中提取 JSON 对象或数组并解析"""
+
+    text = text.strip()
+    # 尝试快速解析
     try:
-        start = text.index("{")
-        end = text.rindex("}") + 1
-        return json.loads(text[start:end])
-    except Exception as exc:
-        logging.error("JSON 解析失败: %s", exc)
-        return {}
+        return json.loads(text)
+    except Exception:
+        pass
+    # 尝试用正则提取第一个 JSON 结构
+    match = re.search(r"(\[.*?\]|\{.*?\})", text, flags=re.S)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except Exception:
+            logging.error("匹配到 JSON 片段但解析失败: %s", match.group(1))
+    logging.error("JSON 解析失败: %s", text)
+    return None
 
 
 def _canonical_doc_key(name: str) -> tuple[str, str]:
@@ -223,10 +223,10 @@ def _canonical_doc_key(name: str) -> tuple[str, str]:
 
 def deduplicate_references(
     refs: List[Tuple[str, str]],
-    insights: List[Dict[str, str]],
-) -> tuple[List[Tuple[str, str]], List[Dict[str, str]]]:
+    insights: List[Any],
+) -> tuple[List[Tuple[str, str]], List[Any]]:
     """Remove duplicate docs keeping the latest by date."""
-    mapping: Dict[str, Tuple[str, str, Dict[str, str], str]] = {}
+    mapping: Dict[str, Tuple[str, str, Any, str]] = {}
     order: List[str] = []
     for (doc_id, name), insight in zip(refs, insights):
         date, key = _canonical_doc_key(name)
@@ -236,7 +236,7 @@ def deduplicate_references(
             if cur is None:
                 order.append(key)
     dedup_refs: List[Tuple[str, str]] = []
-    dedup_insights: List[Dict[str, str]] = []
+    dedup_insights: List[Any] = []
     for key in order:
         doc_id, name, insight, _ = mapping[key]
         dedup_refs.append((doc_id, name))
@@ -247,85 +247,46 @@ def deduplicate_references(
 # ---------- 工具函数 ----------
 
 
-def doc_has_content(insight: Dict[str, str]) -> bool:
+def doc_has_content(insight: List[Dict[str, str]] | Any) -> bool:
     """判断文档分析结果是否包含有价值的内容"""
 
-    if not isinstance(insight, dict):
+    if not isinstance(insight, list):
         return False
-    biz = str(insight.get("业务问题", "")).strip()
-    snippet = str(insight.get("与问题相关的原文摘录", "")).strip()
-    plan = insight.get("需求方案", {})
-    plan_values = plan.values() if isinstance(plan, dict) else []
-    return bool(biz or snippet or any(str(v).strip() for v in plan_values))
+    for item in insight:
+        if not isinstance(item, dict):
+            continue
+        behavior = str(item.get("系统行为", "")).strip()
+        if behavior:
+            return True
+    return False
 
 
-def wrap_details(label: str, content: str) -> str:
-    """Wrap content in a collapsible HTML details block."""
+def sanitize_doc_name(name: str) -> str:
+    """Escape brackets in document names to avoid Markdown links."""
 
-    return f"<details><summary>{label}</summary>\n\n{content}\n</details>\n\n"
-
-
-def fold_snippet_section(text: str) -> str:
-    """Always collapse the snippet section using HTML details."""
-
-    m = re.search(r"(#### 3\. 典型原文摘录\n)(.+)", text, flags=re.S)
-    if not m:
-        return text
-    header, rest = m.groups()
-    folded = wrap_details("典型原文摘录", rest.strip())
-    return text[: m.start()] + header + folded
+    return name.replace("[", "\\[").replace("]", "\\]")
 
 
-async def reduce_element(element: str, items: List[Tuple[int, str]]) -> str:
-    """Recursively summarize a specific element across documents."""
+def sanitize_quote(text: str) -> str:
+    """Escape Markdown formatting characters in quoted text."""
 
-    lines = [f"{i}. {text.strip()}" for i, text in items if text.strip()]
-    if not lines:
-        return ""
+    special_chars = "*`_"
+    for ch in special_chars:
+        text = text.replace(ch, f"\\{ch}")
+    return text
 
-    async def summarize_once(block: List[str]) -> str:
-        context = "\n".join(block)
-        prompt = (
-            f"请根据以下“{element}”字段内容，严格按照如下结构分条归纳：\n\n"
-            "#### 1. 通用做法\n"
-            "- 仅列本要素的主要共性做法。\n\n"
-            "#### 2. 分歧与争议\n"
-            "- 每条写明具体分歧/争议点，明确不同做法并标注涉及文档编号（如[^1][^4]）。\n\n"
-            "#### 3. 典型原文摘录\n"
-            "> 每条仅列一句关键原文，标注文档编号（如[^2]）。\n"
-            "> 如内容多，可只选最具代表性的2-3条。\n\n"
-            "回复格式务必严格与上方示例对齐，不要出现任何说明或多余结构。\n"
-            "字段内容如下（每条已标明文档编号）：\n\n" + context
-        )
-        tokens = count_tokens(prompt)
-        model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
-        use_long = model == OPENAI_LONG_MODEL
-        max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-        logging.info("[LLM] 汇总 %s，模型 %s，输入 %d tokens", element, model, tokens)
-        patterns = [
-            r"#### 1\. 通用做法",
-            r"#### 2\. 分歧与争议",
-            r"#### 3\. 典型原文摘录",
-        ]
-        text = await call_chat_checked(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-            use_long=use_long,
-            patterns=patterns,
-        )
-        m = re.search(r"(#### 1\. 通用做法.*)", text, flags=re.S)
-        return m.group(1).strip() if m else text.strip()
 
-    chunk_size = 20
-    current = lines
-    while len(current) > 1:
-        summaries: List[str] = []
-        for start in range(0, len(current), chunk_size):
-            chunk = current[start : start + chunk_size]
-            summaries.append(await summarize_once(chunk))
-        current = summaries
-    return fold_snippet_section(current[0])
+def merge_by_function(insights: List[Dict[str, Any]]) -> Dict[str, List[Dict]]:
+    """按功能模块聚合 insight，保留不同条件与发布时间的多条记录"""
+
+    from collections import defaultdict
+
+    merged = defaultdict(list)
+    for item in insights:
+        module = str(item.get("功能模块", "")).strip()
+        if module:
+            merged[module].append(item)
+    return dict(merged)
 
 
 async def extract_keywords(question: str, limit: int = 5) -> List[str]:
@@ -360,40 +321,6 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
     keywords = keywords[:limit]
     logging.info("[LLM] 解析后的关键词: %s", keywords)
     return keywords
-
-
-async def extract_extra_elements(question: str, base_elements: List[str], limit: int = 3) -> List[str]:
-    """Determine additional elements to summarize based on the question.
-
-    This step uses the long-context model to better handle lengthy questions.
-    """
-
-    prompt = (
-        "你是需求分析助理，请根据下列问题判断除了常规要素外还需要额外归纳哪些要素。\n"
-        f"常规要素包括：{','.join(base_elements)}。\n"
-        f"若问题中提及其他关键维度，请列出这些要素名称，不超过{limit}个。\n"
-        "若无额外要素，请返回空数组。仅以 JSON 数组返回，不要添加解释。\n"
-        "问题：" + question
-    )
-    text = await call_chat(
-        model=OPENAI_LONG_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        use_long=True,
-    )
-    try:
-        elems = json.loads(text)
-        if not isinstance(elems, list):
-            raise ValueError
-    except Exception:
-        elems = [x.strip() for x in re.split(r"[,\s]+", text) if x.strip()]
-    extra = []
-    for e in elems:
-        if e not in base_elements and e not in extra:
-            extra.append(e)
-        if len(extra) >= limit:
-            break
-    logging.info("[LLM] 解析出的额外要素: %s", extra)
-    return extra
 
 
 async def extract_keywords_from_insights(
@@ -503,40 +430,47 @@ async def analyze_document(
     question: str,
     md_text: str,
     filename: str,
-    element_keys: List[str] | None = None,
-) -> Dict[str, str]:
-    """分析单个 Markdown 文档并以结构化 JSON 返回结果"""
+) -> List[Dict[str, str]]:
+    """分析单个 Markdown 文档并返回 insight 列表"""
 
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
     if not md_text:
         logging.error("文档 %s 内容为空，跳过分析", filename)
-        return {}
-    if element_keys is None:
-        element_keys = DEFAULT_ELEMENT_KEYS
+        return []
 
-    plan_fields = {k: "" for k in element_keys}
-    plan_fields.update(
+    example = [
         {
-            "参与角色": "",
+            "功能模块": "退保回退",
+            "发布时间": "20200101",
+            "适用条件": "原任务为保全生效，未存在后续保全",
+            "系统行为": "系统自动展示可回退任务，阻断未生效任务回退",
+            "例外或限制": "如有规则适用于特定渠道/地区/时间段，或不适用某场景，请明确列出",
+            "原文摘录": "回退保全任务的任务状态必须为'保全生效'...",
         }
-    )
-    example = {
-        "文档标题": "",
-        "发布时间": "",
-        "业务问题": "",
-        "需求方案": plan_fields,
-        "与问题相关的原文摘录": "",
-    }
+    ]
     prompt = (
-        "你是一名资深需求分析师，请专注于分析下列需求文档中与业务问题“" + question + "”最直接相关的内容，提炼关键信息。"
-        "请只输出与该问题相关的业务问题与需求方案内容，其它字段如无信息可留空。"
-        "如不确定与问题关联性，请先保留该内容，由后续批量归纳时判断其价值。"
-        "并在'与问题相关的原文摘录'字段摘录最关键的原文或段落，便于后续引用。\n"
-        f"需求方案的要素包括：{','.join(element_keys + ['参与角色'])}。\n"
-        "请按照以下 JSON 结构回复：\n" + json.dumps(example, ensure_ascii=False) + "\n\n文档内容：\n" + md_text
+        f"你是一位资深系统分析师，负责从历史需求文档中提取“当前系统行为（As-Is）”。\n\n"
+        f"请结合提问：“{question}”，严格从以下文档中提取与问题**直接相关**的系统行为信息，并输出结构化结果。\n\n"
+        "⚠️ 提取要求如下：\n"
+        "- 仅提取系统已明确实现的功能，不包含规划中、建议类内容。\n"
+        "- 信息必须与问题存在直接关联，无关内容禁止返回。\n"
+        "- 每条信息必须提供对应原文摘录，确保可验证与问题相关。\n"
+        "  如原文包含计算公式，请完整摘录该公式，不得省略。\n"
+        "- 禁止联想或补全未明确写明的内容。\n"
+        "- 对“同某章节”“见前述章节”的引用描述，必须提取引用部分对应的逻辑，如无法获取具体内容则放弃这一部分的提取。\n"
+        "- 严禁输出 JSON 之外的任何字符。\n\n"
+        "返回格式：JSON 数组，每个元素包含以下字段：\n"
+        "- 功能模块：功能或子系统的名称，如“退保申请阻断”\n"
+        "- 发布时间：该规则对应的文档发布时间（格式：YYYYMMDD，可用文件名提取）\n"
+        "- 适用条件：该行为适用的业务前提或触发条件\n"
+        "- 系统行为：系统当前明确执行的动作或限制逻辑\n"
+        "- 例外或限制：如有规则适用于特定渠道/地区/时间段，或不适用某场景，请明确列出\n"
+        "- 原文摘录：原文中支持该逻辑的句子或段落，不摘录章节标题、编号或流程图说明等无意义内容。\n\n"
+        f"示例：\n{json.dumps(example, ensure_ascii=False, indent=2)}\n\n"
+        "若无与问题直接相关的内容，请返回空数组 [].\n\n"
+        "文档内容:\n" + md_text
     )
     tokens = count_tokens(prompt)
-    # 根据输入 token 数量决定使用常规模型还是长上下文模型
     model = OPENAI_LONG_MODEL if tokens > 95000 else OPENAI_MODEL
     use_long = model == OPENAI_LONG_MODEL
     max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
@@ -548,14 +482,17 @@ async def analyze_document(
         use_long=use_long,
     )
     data = parse_json_from_text(result)
-    # 从文件名中解析发布时间，如 20181108发布_JK005-1234_xxx.docx
-    m = re.search(r"(\d{8})", filename)
-    if m:
-        data["发布时间"] = m.group(1)
-    else:
-        data["发布时间"] = ""
-    if "文档标题" not in data or not data["文档标题"]:
-        data["文档标题"] = filename
+    if data is None:
+        logging.error("LLM 返回无法解析的 JSON: %s", result)
+        return []
+    if not isinstance(data, list):
+        logging.error("LLM 返回格式异常: %s", result)
+        return []
+    pub_match = re.search(r"(\d{8})", filename)
+    pub = pub_match.group(1) if pub_match else ""
+    for item in data:
+        if "发布时间" not in item or not item["发布时间"]:
+            item["发布时间"] = pub
     logging.info("[LLM] 分析结果: %s", data)
     return data
 
@@ -564,8 +501,9 @@ async def compose_report(
     question: str,
     insights: List[Dict[str, str]],
     references: List[Tuple[str, str]],
-    element_keys: List[str] | None = None,
-) -> tuple[str, str, Dict[str, str]]:
+    keywords: List[str],
+    retrieved: int,
+) -> tuple[str, str]:
     """综合所有分析结果并生成 Markdown 报告"""
 
     def has_value(obj: Dict) -> bool:
@@ -579,7 +517,8 @@ async def compose_report(
 
     global TOKENS_IN, TOKENS_OUT, MODELS_USED
 
-    docs: List[Tuple[int, str, str, Dict]] = []
+    docs: List[Tuple[int, str, str, List[Dict[str, str]]]] = []
+    doc_idx_map: Dict[Tuple[str, str], int] = {}
     idx = 1
     for (doc_id, name), insight in zip(references, insights):
         if not insight:
@@ -587,119 +526,110 @@ async def compose_report(
         if not doc_has_content(insight):
             logging.info("文档 %s 无有效内容，跳过", name)
             continue
-        pub = insight.get("发布时间", "") if isinstance(insight, dict) else ""
+        pub = insight[0].get("发布时间", "") if isinstance(insight, list) and insight else ""
+        doc_idx_map[(doc_id, name)] = idx
         docs.append((idx, name, pub, insight))
         idx += 1
 
-    if element_keys is None:
-        element_keys = DEFAULT_ELEMENT_KEYS
-
     doc_list_full: List[Tuple[int, str, str]] = []
-    elements: Dict[str, List[Tuple[int, str]]] = {k: [] for k in element_keys}
+    insight_items: List[Tuple[int, Dict[str, str]]] = []
 
     for i, name, pub, insight in docs:
         doc_list_full.append((i, name, pub))
-        plan = insight.get("需求方案", {})
-        if not isinstance(plan, dict):
+        if not isinstance(insight, list):
             continue
-        for key in element_keys:
-            text = str(plan.get(key, "")).strip()
-            if text:
-                elements[key].append((i, text))
+        for item in insight:
+            insight_items.append((i, item))
 
-    element_summaries: Dict[str, str] = {}
-    tasks = [reduce_element(key, items) for key, items in elements.items()]
-    results = await asyncio.gather(*tasks)
-    for key, summary in zip(elements.keys(), results):
-        element_summaries[key] = summary
+    flat: List[Dict[str, Any]] = []
+    for doc_idx, item in insight_items:
+        record = dict(item)
+        record["文档编号"] = doc_idx
+        flat.append(record)
 
-    context_for_overall = "\n\n".join(f"{k}:\n{v}" for k, v in element_summaries.items() if v)
-    overall_prompt = (
-        f"请基于以下各要素的分条归纳内容，生成“主要结论与摘要”部分，严格使用如下结构：\n"
-        "#### 2.1 共性做法\n- 共性1...\n\n"
-        "#### 2.2 分歧与争议\n| 主题 | 观点 |\n| ---- | ---- |\n| 分歧1 | ... |\n\n"
-        "#### 2.3 规范化建议\n- 建议1...\n\n"
-        "其中“2.2 分歧与争议”部分必须使用 Markdown 表格呈现。\n"
-        "仅按上述结构输出，不得添加其他说明或段落。所有文档编号用脚注标注。\n"
-        f"内容如下：\n{context_for_overall}"
-    )
-    model = OPENAI_LONG_MODEL if count_tokens(overall_prompt) > 95000 else OPENAI_MODEL
-    use_long = model == OPENAI_LONG_MODEL
-    max_tokens = OPENAI_LONG_MAX_TOKENS if use_long else OPENAI_MAX_TOKENS
-    overall_patterns = [
-        r"#### 2\.1 共性做法",
-        r"#### 2\.2 分歧与争议",
-        r"#### 2\.3 规范化建议",
-    ]
-    overall_summary = await call_chat_checked(
-        model=model,
-        messages=[{"role": "user", "content": overall_prompt}],
-        max_tokens=max_tokens,
-        use_long=use_long,
-        patterns=overall_patterns,
-    )
-    m = re.search(r"(#### 2\.1 共性做法.*)", overall_summary, flags=re.S)
-    if m:
-        overall_summary = m.group(1).strip()
+    merged = merge_by_function(flat)
+
+    sections: List[str] = []
+    for module, items in merged.items():
+        items.sort(key=lambda x: x.get("发布时间", ""))
+        lines = [f"### {module}", "", "| 发布时间 | 适用条件 | 系统行为 | 例外或限制 |", "|----------|----------|----------|----------|"]
+        for it in items:
+            lines.append(f"| {it.get('发布时间', '')} | {it.get('适用条件', '')} | {it.get('系统行为', '')} | {it.get('例外或限制', '')} |")
+        quotes = []
+        for it in items:
+            raw = str(it.get("原文摘录", "")).strip()
+            if not raw:
+                continue
+            qt = sanitize_quote(raw)
+            qstr = f"原文（{it.get('发布时间', '')}）：“{qt}”[文档编号:{it.get('文档编号')}]"
+            quotes.append(qstr)
+        if quotes:
+            lines.append("")
+            for idx, q in enumerate(quotes):
+                lines.append(f"> {q}")
+                if idx < len(quotes) - 1:
+                    lines.append(">")
+        sections.append("\n".join(lines))
+
+    theme_text = "\n\n".join(sections)
+    if not theme_text.strip():
+        theme_text = "未查到相关内容"
 
     summary_prompt = (
-        "请根据提问整理调研的背景与目标，概括下列内容的核心观点，并生成报告标题。"
+        "请根据提问整理本次报告的背景与目标，强调报告聚焦于需求文档中已落地的系统现状，"
+        "以便后续差异分析和需求澄清。请生成报告标题。"
         "仅以 JSON 格式回复，如："
-        '{"调研背景与目标": "...", "核心观点": "...", "标题": "关于XXX调研报告"}。'
-        "标题格式必须为：关于{{主题}}调研报告，主题不超过20个字。"
-        "不得添加其他说明。\n问题：" + question + "\n内容:\n" + overall_summary
+        '{"背景与目标": "...", "标题": "关于XXX现状分析报告"}'
+        "标题格式必须为：关于{{主题}}现状分析报告，主题不超过20个字。"
+        "不得添加其他说明。\n问题：" + question + "\n内容:\n" + theme_text
     )
     summary_text = await call_chat_checked(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": summary_prompt}],
-        patterns=[r"调研背景与目标", r"核心观点", r"标题"],
+        patterns=[r"背景与目标", r"标题"],
     )
-    summary_data = parse_json_from_text(summary_text)
-    bg_goal = summary_data.get("调研背景与目标", "").strip()
-    short_summary = summary_data.get("核心观点", "").strip()
+    summary_data = parse_json_from_text(summary_text) or {}
+    bg_goal = summary_data.get("背景与目标", "").strip()
     title = summary_data.get("标题", "").strip().splitlines()[0]
-    short_summary = re.sub(r"^#+", "", short_summary).strip()
-    short_summary = re.sub(r"^本报告核心观点[:：\s]*", "", short_summary)
 
     body_lines = [
-        "## 一、调研背景与目标",
+        "## 一、背景与目标",
         bg_goal,
         "",
-        "## 二、主要结论与摘要",
-        f"本报告核心观点：{short_summary}",
-        "",
-        overall_summary,
-        "",
-        "## 三、要素逐项归纳",
+        "## 二、系统现状",
+        theme_text,
     ]
-    idx_elem = 1
-    for key in element_keys:
-        summary = element_summaries.get(key, "")
-        if summary:
-            body_lines.append(f"### 3.{idx_elem} {key}")
-            body_lines.append(summary)
-            idx_elem += 1
     body = "\n".join(body_lines)
 
-    title_pattern = r"^关于.{1,20}调研报告$"
+    title_pattern = r"^关于.{1,20}现状分析报告$"
     if not re.match(title_pattern, title):
         logging.warning("标题格式不符: %s", title)
 
-    doc_lines = [f"[^{i}]: {name}" for i, name, _ in doc_list_full]
+    doc_lines = [f"[{i}] {sanitize_doc_name(name)}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
-    meta = f"**调查时间**：{end_time_str}  \n**耗时**：{mins}分{secs}秒  \n**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n**费用**：{TOTAL_COST:.4f}  \n**模型**：{','.join(MODELS_USED)}\n---"
-    report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}\n\n## 四、引用文档\n" + "\n\n".join(doc_lines) + "\n"
+    meta = (
+        f"**关键词**：{', '.join(keywords)}  \n"
+        f"**累计检索**：{retrieved}篇  \n"
+        f"**调查时间**：{end_time_str}  \n"
+        f"**耗时**：{mins}分{secs}秒  \n"
+        f"**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n"
+        f"**费用**：{TOTAL_COST:.4f}  \n"
+        f"**模型**：{','.join(MODELS_USED)}\n---"
+    )
+    report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}"
+    if doc_lines:
+        report += "\n\n## 三、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
-    return report, title, element_summaries
+    return report, title
 
 
 # ---------- 主流程 ----------
 
 
 async def main(question: str):
-    """根据输入问题生成调研报告"""
+    """根据输入问题生成现状分析报告"""
     if not (RAGFLOW_API_KEY and KB1_ID and KB2_ID and OPENAI_API_KEY):
         raise RuntimeError("Required environment variables: RAGFLOW_API_KEY, KB1_ID, KB2_ID, OPENAI_API_KEY")
 
@@ -707,8 +637,6 @@ async def main(question: str):
     # 初始化 RAGFlow 客户端并提取初始关键词
     rag = RAGFlow(api_key=RAGFLOW_API_KEY, base_url=RAGFLOW_HOST)
     keywords = await extract_keywords(question)
-    extra_elements = await extract_extra_elements(question, DEFAULT_ELEMENT_KEYS)
-    element_keys = DEFAULT_ELEMENT_KEYS + [e for e in extra_elements if e not in DEFAULT_ELEMENT_KEYS]
 
     # Step2：在知识库1中循环检索
     logging.info("开始在知识库1中检索")
@@ -760,7 +688,7 @@ async def main(question: str):
 
         async def sem_analyze(md: str, name: str):
             async with sem:
-                return await analyze_document(question, md, name, element_keys)
+                return await analyze_document(question, md, name)
 
         tasks = [sem_analyze(md, name) for _, name, md in documents]
         results = await asyncio.gather(*tasks)
@@ -777,7 +705,7 @@ async def main(question: str):
             break
 
     references, insights = deduplicate_references(references, insights)
-    report, title, element_summaries = await compose_report(question, insights, references, element_keys)
+    report, title = await compose_report(question, insights, references, keywords, len(all_doc_ids))
     logging.info("报告生成完毕，正在上传到知识库2")
 
     # 将生成的报告上传回知识库2
@@ -795,27 +723,24 @@ async def main(question: str):
         report,
         encoding="utf-8",
     )
-    # 保存各要素汇总
-    for key, summary in element_summaries.items():
-        safe_key = re.sub(r"[\\/:*?\"<>|\s]", "_", key)
-        batch_name = f"{safe_key}.md"
-        if batch_name == filename:
-            batch_name = f"{safe_key}_summary.md"
-        await asyncio.to_thread(
-            Path(os.path.join(report_dir, batch_name)).write_text,
-            summary,
-            encoding="utf-8",
-        )
     logging.info("已上传报告 %s", filename)
 
     # 使用 pandoc 转为 HTML 文档并立即打开
     html_name = filename.rsplit(".", 1)[0] + ".html"
     html_path = os.path.join(report_dir, html_name)
+
     try:
         await asyncio.to_thread(
             subprocess.run,
-            ["pandoc", os.path.join(report_dir, filename), "-o", html_path],
+            [
+                "pandoc",
+                os.path.join(report_dir, filename),
+                "-s",
+                "-o",
+                html_path,
+            ],
             check=True,
+            cwd=report_dir,
         )
         if sys.platform.startswith("darwin"):
             await asyncio.to_thread(subprocess.run, ["open", html_path])
