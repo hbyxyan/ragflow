@@ -24,6 +24,8 @@ import re
 import logging
 import asyncio
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -104,10 +106,23 @@ START_TIME = time.time()
 
 # 各模型的费用配置，格式示例：
 # {"model_name": {"prompt": 0.001, "completion": 0.002}}
-try:
-    MODEL_PRICES = json.loads(os.environ.get("MODEL_PRICES", "{}"))
-except Exception:
-    MODEL_PRICES = {}
+DEFAULT_MODEL_PRICES = {
+    "Pro/deepseek-ai/DeepSeek-R1": {"prompt": 0.004, "completion": 0.016},
+    "qwen-long-latest": {"prompt": 0.0005, "completion": 0.002},
+    "Qwen/qwen-long-latest": {"prompt": 0.0005, "completion": 0.002},
+    "qwen3-235b-a22b": {"prompt": 0.002, "completion": 0.020},
+    "Qwen/Qwen3-235B-A22B": {"prompt": 0.0025, "completion": 0.010},
+}
+
+MODEL_PRICES_ENV = os.environ.get("MODEL_PRICES")
+if MODEL_PRICES_ENV:
+    try:
+        MODEL_PRICES = json.loads(MODEL_PRICES_ENV)
+    except Exception as exc:
+        logging.warning("Failed to parse MODEL_PRICES: %s", exc)
+        MODEL_PRICES = DEFAULT_MODEL_PRICES
+else:
+    MODEL_PRICES = DEFAULT_MODEL_PRICES
 
 # 默认需要归纳的业务要素
 DEFAULT_ELEMENT_KEYS = [
@@ -192,6 +207,41 @@ def parse_json_from_text(text: str) -> Dict[str, str]:
     except Exception as exc:
         logging.error("JSON 解析失败: %s", exc)
         return {}
+
+
+def _canonical_doc_key(name: str) -> tuple[str, str]:
+    """Return (date, base_name) extracted from document display name."""
+    m = re.match(r"^(\d{8})发布_[^_]+_(.+)$", name)
+    if m:
+        date, tail = m.groups()
+    else:
+        date, tail = "00000000", name
+    tail = re.sub(r"[\s_]*\(\d+\)|[\s_]*（\d+）", "", tail)
+    tail = re.sub(r"\s*-?副本", "", tail)
+    return date, tail
+
+
+def deduplicate_references(
+    refs: List[Tuple[str, str]],
+    insights: List[Dict[str, str]],
+) -> tuple[List[Tuple[str, str]], List[Dict[str, str]]]:
+    """Remove duplicate docs keeping the latest by date."""
+    mapping: Dict[str, Tuple[str, str, Dict[str, str], str]] = {}
+    order: List[str] = []
+    for (doc_id, name), insight in zip(refs, insights):
+        date, key = _canonical_doc_key(name)
+        cur = mapping.get(key)
+        if cur is None or date > cur[3]:
+            mapping[key] = (doc_id, name, insight, date)
+            if cur is None:
+                order.append(key)
+    dedup_refs: List[Tuple[str, str]] = []
+    dedup_insights: List[Dict[str, str]] = []
+    for key in order:
+        doc_id, name, insight, _ = mapping[key]
+        dedup_refs.append((doc_id, name))
+        dedup_insights.append(insight)
+    return dedup_refs, dedup_insights
 
 
 # ---------- 工具函数 ----------
@@ -283,10 +333,17 @@ async def extract_keywords(question: str, limit: int = 5) -> List[str]:
 
     logging.info("[LLM] 正在从问题中提取关键词: %s", question)
     prompt = (
-        f"你是一个需求分析助理，请从下面的问题中提取不超过{limit}个核心关键词。"
-        "关键词应聚焦于业务动作或场景，并尽量精简，不包含'规则'、'流程'等修饰词。"
-        "请仅以 JSON 数组返回，不要添加任何解释。"
-        '例如：["投保", "核保"]\n问题：' + question
+        f"你是一位业务信息抽取专家，请从下面的问题中提取不超过 {limit} 个核心关键词或短语。\n\n"
+        "关键词应满足以下要求：\n"
+        "1. 覆盖任务的**对象**（如机构、系统、业务）、**关键动作**（如调研、升级、整改）、**时间要素**（如2025年）；\n"
+        "2. 对于带有“规则”“流程”“现状”等修饰词的表达，应简化为核心业务词，例如“投保规则”应提取为“投保”；\n"
+        "3. 忽略泛化词汇，如“调研”“分析”“研究”“情况”等泛泛动作或语气词，除非是问题真正的业务动词；\n"
+        "4. 保持精简，去除无用描述；仅以 JSON 数组返回关键词结果，不要包含任何解释说明。\n\n"
+        "示例输入1：“调研投保规则”\n"
+        '示例输出1:["投保"]\n\n'
+        "示例输入2：“调研一下建行2025年相关的改造”\n"
+        '示例输出2:["建行", "2025年", "改造"]\n\n'
+        f"问题：{question}"
     )
     text = await call_chat(
         model=OPENAI_LONG_MODEL,
@@ -353,10 +410,14 @@ async def extract_keywords_from_insights(
     if not joined:
         return []
     prompt = (
-        f"你是需求分析助理，已提取的关键词有：{','.join(base_keywords)}。"
-        f"根据下面的文档分析结论和问题'{question}'，补充不超过{limit}个新的与问题解答可能相关的关键词。"
-        "关键词应聚焦于业务动作或场景，并尽量精简，不包含'规则'、'流程'等修饰词，例如'投保规则'应简化为'投保'。"
-        '请仅以 JSON 数组返回，不要添加解释，格式示例：["核保", "退保"]。\n文档分析结论:\n' + joined
+        f"你是一位业务信息抽取专家，已提取的关键词有：{','.join(base_keywords)}。\n"
+        f"根据下面的文档分析结论和问题'{question}'，补充不超过 {limit} 个新的与问题解答可能相关的关键词或短语。\n\n"
+        "关键词应满足以下要求：\n"
+        "1. 覆盖任务的**对象**（如机构、系统、业务）、**关键动作**（如调研、升级、整改）、**时间要素**（如2025年）；\n"
+        "2. 对于带有“规则”“流程”“现状”等修饰词的表达，应简化为核心业务词，例如“投保规则”应提取为“投保”；\n"
+        "3. 忽略泛化词汇，如“调研”“分析”“研究”“情况”等泛泛动作或语气词，除非是问题真正的业务动词；\n"
+        "4. 保持精简，去除无用描述；仅以 JSON 数组返回关键词结果，不要包含任何解释说明。\n\n"
+        "文档分析结论:\n" + joined
     )
     text = await call_chat(
         model=OPENAI_MODEL,
@@ -447,6 +508,9 @@ async def analyze_document(
     """分析单个 Markdown 文档并以结构化 JSON 返回结果"""
 
     logging.info("[LLM] 正在分析文档，长度 %d", len(md_text))
+    if not md_text:
+        logging.error("文档 %s 内容为空，跳过分析", filename)
+        return {}
     if element_keys is None:
         element_keys = DEFAULT_ELEMENT_KEYS
 
@@ -553,8 +617,9 @@ async def compose_report(
     overall_prompt = (
         f"请基于以下各要素的分条归纳内容，生成“主要结论与摘要”部分，严格使用如下结构：\n"
         "#### 2.1 共性做法\n- 共性1...\n\n"
-        "#### 2.2 分歧与争议\n- 分歧1...\n\n"
+        "#### 2.2 分歧与争议\n| 主题 | 观点 |\n| ---- | ---- |\n| 分歧1 | ... |\n\n"
         "#### 2.3 规范化建议\n- 建议1...\n\n"
+        "其中“2.2 分歧与争议”部分必须使用 Markdown 表格呈现。\n"
         "仅按上述结构输出，不得添加其他说明或段落。所有文档编号用脚注标注。\n"
         f"内容如下：\n{context_for_overall}"
     )
@@ -577,21 +642,32 @@ async def compose_report(
     if m:
         overall_summary = m.group(1).strip()
 
-    summary_prompt = "请用不超过20个字概括下列内容的核心观点：\n" + overall_summary
-    short_summary = await call_chat(
+    summary_prompt = (
+        "请根据提问整理调研的背景与目标，概括下列内容的核心观点，并生成报告标题。"
+        "仅以 JSON 格式回复，如："
+        '{"调研背景与目标": "...", "核心观点": "...", "标题": "关于XXX调研报告"}。'
+        "标题格式必须为：关于{{主题}}调研报告，主题不超过20个字。"
+        "不得添加其他说明。\n问题：" + question + "\n内容:\n" + overall_summary
+    )
+    summary_text = await call_chat_checked(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": summary_prompt}],
-        max_tokens=32,
+        patterns=[r"调研背景与目标", r"核心观点", r"标题"],
     )
-    short_summary = short_summary.strip()
+    summary_data = parse_json_from_text(summary_text)
+    bg_goal = summary_data.get("调研背景与目标", "").strip()
+    short_summary = summary_data.get("核心观点", "").strip()
+    title = summary_data.get("标题", "").strip().splitlines()[0]
+    short_summary = re.sub(r"^#+", "", short_summary).strip()
     short_summary = re.sub(r"^本报告核心观点[:：\s]*", "", short_summary)
 
     body_lines = [
         "## 一、调研背景与目标",
-        question,
+        bg_goal,
         "",
         "## 二、主要结论与摘要",
         f"本报告核心观点：{short_summary}",
+        "",
         overall_summary,
         "",
         "## 三、要素逐项归纳",
@@ -605,24 +681,16 @@ async def compose_report(
             idx_elem += 1
     body = "\n".join(body_lines)
 
-    title_prompt = (
-        f"请根据以下问题生成标题，要求：\n1. 仅输出一行，不得包含換行或附加说明。\n2. 格式必须为：关于{{{{主题}}}}调研报告。\n3. 主题不超过20个字。\n问题：{question}\n摘要：{overall_summary}"
-    )
     title_pattern = r"^关于.{1,20}调研报告$"
-    title = await call_chat_checked(
-        model=OPENAI_MODEL,
-        messages=[{"role": "user", "content": title_prompt}],
-        max_tokens=64,
-        patterns=[title_pattern],
-    )
-    title = title.strip().splitlines()[0]
+    if not re.match(title_pattern, title):
+        logging.warning("标题格式不符: %s", title)
 
     doc_lines = [f"[^{i}]: {name}" for i, name, _ in doc_list_full]
     end_time_str = time.strftime("%Y-%m-%d %H:%M")
     duration = int(time.time() - START_TIME)
     mins, secs = divmod(duration, 60)
     meta = f"**调查时间**：{end_time_str}  \n**耗时**：{mins}分{secs}秒  \n**tokens**: in:{TOKENS_IN} out:{TOKENS_OUT}  \n**费用**：{TOTAL_COST:.4f}  \n**模型**：{','.join(MODELS_USED)}\n---"
-    report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}\n\n## 四、引用文档\n" + "\n".join(doc_lines) + "\n"
+    report = f"# {title}\n\n{meta}\n\n[TOC]\n\n{body}\n\n## 四、引用文档\n" + "\n\n".join(doc_lines) + "\n"
     logging.info("生成最终报告，包含 %d 个引用", len(doc_list_full))
     return report, title, element_summaries
 
@@ -647,6 +715,7 @@ async def main(question: str):
     insights: List[Dict[str, str]] = []
     references: List[Tuple[str, str]] = []
     tried = set()
+    all_doc_ids: set[str] = set()
     for _ in range(5):
         q = ",".join(keywords)
         ids, names = retrieve_docs(rag, KB1_ID, q)
@@ -669,6 +738,9 @@ async def main(question: str):
                         ids.append(doc_id)
                         names.append(doc_name)
 
+        all_doc_ids.update(ids)
+        logging.info("累计检索到 %d 个文档", len(all_doc_ids))
+
         new_refs = [(i, n) for i, n in zip(ids, names) if i not in tried]
         if not new_refs:
             break
@@ -679,6 +751,9 @@ async def main(question: str):
             tried.add(doc_id)
             logging.info("分析文件 %s", doc_name)
             md, real_name = download_and_convert(rag, KB1_ID, doc_id, doc_name)
+            if not md:
+                logging.error("文件 %s 下载或转换失败，已从待分析列表移除", real_name)
+                continue
             documents.append((doc_id, real_name, md))
 
         sem = asyncio.Semaphore(20)
@@ -701,6 +776,7 @@ async def main(question: str):
         if not extra:
             break
 
+    references, insights = deduplicate_references(references, insights)
     report, title, element_summaries = await compose_report(question, insights, references, element_keys)
     logging.info("报告生成完毕，正在上传到知识库2")
 
@@ -731,6 +807,24 @@ async def main(question: str):
             encoding="utf-8",
         )
     logging.info("已上传报告 %s", filename)
+
+    # 使用 pandoc 转为 HTML 文档并立即打开
+    html_name = filename.rsplit(".", 1)[0] + ".html"
+    html_path = os.path.join(report_dir, html_name)
+    try:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["pandoc", os.path.join(report_dir, filename), "-o", html_path],
+            check=True,
+        )
+        if sys.platform.startswith("darwin"):
+            await asyncio.to_thread(subprocess.run, ["open", html_path])
+        elif os.name == "nt":
+            os.startfile(html_path)  # type: ignore[attr-defined]
+        else:
+            await asyncio.to_thread(subprocess.run, ["xdg-open", html_path])
+    except Exception as exc:
+        logging.error("HTML 生成或打开失败: %s", exc)
 
     # 控制台输出报告内容
     print(report)
