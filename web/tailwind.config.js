@@ -50,6 +50,7 @@ module.exports = {
         'text-title-invert': 'var(--text-title-invert)',
         'background-header-bar': 'var(--background-header-bar)',
         'background-card': 'var(--background-card)',
+        'background-note': 'var(--background-note)',
         'background-checked': 'var(--background-checked)',
         'background-highlight': 'var(--background-highlight)',
 
@@ -219,5 +220,9 @@ module.exports = {
       },
     },
   },
-  plugins: [require('tailwindcss-animate'), require('@tailwindcss/line-clamp')],
+  plugins: [
+    require('tailwindcss-animate'),
+    require('@tailwindcss/line-clamp'),
+    require('tailwind-scrollbar'),
+  ],
 };

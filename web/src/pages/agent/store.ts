@@ -66,7 +66,6 @@ export type RFState = {
     target?: string | null,
     isConnecting?: boolean,
   ) => void;
-  deletePreviousEdgeOfClassificationNode: (connection: Connection) => void;
   duplicateNode: (id: string, name: string) => void;
   duplicateIterationNode: (id: string, name: string) => void;
   deleteEdge: () => void;
@@ -75,7 +74,6 @@ export type RFState = {
   deleteAgentDownstreamNodesById: (id: string) => void;
   deleteAgentToolNodeById: (id: string) => void;
   deleteIterationNodeById: (id: string) => void;
-  deleteEdgeBySourceAndSourceHandle: (connection: Partial<Connection>) => void;
   findNodeByName: (operatorName: Operator) => RAGFlowNodeType | undefined;
   updateMutableNodeFormItem: (id: string, field: string, value: any) => void;
   getOperatorTypeFromId: (id?: string | null) => string | undefined;
@@ -85,6 +83,12 @@ export type RFState = {
   setClickedNodeId: (id?: string) => void;
   setClickedToolId: (id?: string) => void;
   findUpstreamNodeById: (id?: string | null) => RAGFlowNodeType | undefined;
+  deleteEdgesBySourceAndSourceHandle: (
+    source: string,
+    sourceHandle: string,
+  ) => void; // Deleting a condition of a classification operator will delete the related edge
+  findAgentToolNodeById: (id: string | null) => string | undefined;
+  selectNodeIds: (nodeIds: string[]) => void;
 };
 
 // this is our useStore hook that we can use in our components to get parts of the store and call actions
@@ -122,14 +126,10 @@ const useGraphStore = create<RFState>()(
         setEdges(mapEdgeMouseEvent(edges, edgeId, false));
       },
       onConnect: (connection: Connection) => {
-        const {
-          deletePreviousEdgeOfClassificationNode,
-          updateFormDataOnConnect,
-        } = get();
+        const { updateFormDataOnConnect } = get();
         set({
           edges: addEdge(connection, get().edges),
         });
-        deletePreviousEdgeOfClassificationNode(connection);
         updateFormDataOnConnect(connection);
       },
       onSelectionChange: ({ nodes, edges }: OnSelectionChangeParams) => {
@@ -216,7 +216,6 @@ const useGraphStore = create<RFState>()(
         set({
           edges: addEdge(connection, get().edges),
         });
-        get().deletePreviousEdgeOfClassificationNode(connection);
         //  TODO: This may not be reasonable. You need to choose between listening to changes in the form.
         get().updateFormDataOnConnect(connection);
       },
@@ -224,54 +223,17 @@ const useGraphStore = create<RFState>()(
         return get().edges.find((x) => x.id === id);
       },
       updateFormDataOnConnect: (connection: Connection) => {
-        const { getOperatorTypeFromId, updateNodeForm, updateSwitchFormData } =
-          get();
+        const { getOperatorTypeFromId, updateSwitchFormData } = get();
         const { source, target, sourceHandle } = connection;
         const operatorType = getOperatorTypeFromId(source);
         if (source) {
           switch (operatorType) {
-            case Operator.Relevant:
-              updateNodeForm(source, { [sourceHandle as string]: target });
-              break;
-            case Operator.Categorize:
-              if (sourceHandle)
-                updateNodeForm(source, target, [
-                  'category_description',
-                  sourceHandle,
-                  'to',
-                ]);
-              break;
             case Operator.Switch: {
               updateSwitchFormData(source, sourceHandle, target, true);
               break;
             }
             default:
               break;
-          }
-        }
-      },
-      deletePreviousEdgeOfClassificationNode: (connection: Connection) => {
-        // Delete the edge on the classification node or relevant node anchor when the anchor is connected to other nodes
-        const { edges, getOperatorTypeFromId, deleteEdgeById } = get();
-        // the node containing the anchor
-        const anchoredNodes = [
-          Operator.Categorize,
-          Operator.Relevant,
-          // Operator.Switch,
-        ];
-        if (
-          anchoredNodes.some(
-            (x) => x === getOperatorTypeFromId(connection.source),
-          )
-        ) {
-          const previousEdge = edges.find(
-            (x) =>
-              x.source === connection.source &&
-              x.sourceHandle === connection.sourceHandle &&
-              x.target !== connection.target,
-          );
-          if (previousEdge) {
-            deleteEdgeById(previousEdge.id);
           }
         }
       },
@@ -350,14 +312,14 @@ const useGraphStore = create<RFState>()(
                 [sourceHandle as string]: undefined,
               });
               break;
-            case Operator.Categorize:
-              if (sourceHandle)
-                updateNodeForm(source, undefined, [
-                  'category_description',
-                  sourceHandle,
-                  'to',
-                ]);
-              break;
+            // case Operator.Categorize:
+            //   if (sourceHandle)
+            //     updateNodeForm(source, undefined, [
+            //       'category_description',
+            //       sourceHandle,
+            //       'to',
+            //     ]);
+            //   break;
             case Operator.Switch: {
               updateSwitchFormData(source, sourceHandle, target, false);
               break;
@@ -368,19 +330,6 @@ const useGraphStore = create<RFState>()(
         }
         set({
           edges: edges.filter((edge) => edge.id !== id),
-        });
-      },
-      deleteEdgeBySourceAndSourceHandle: ({
-        source,
-        sourceHandle,
-      }: Partial<Connection>) => {
-        const { edges } = get();
-        const nextEdges = edges.filter(
-          (edge) =>
-            edge.source !== source || edge.sourceHandle !== sourceHandle,
-        );
-        set({
-          edges: nextEdges,
         });
       },
       deleteNodeById: (id: string) => {
@@ -550,6 +499,31 @@ const useGraphStore = create<RFState>()(
         const { edges, getNode } = get();
         const edge = edges.find((x) => x.target === id);
         return getNode(edge?.source);
+      },
+      deleteEdgesBySourceAndSourceHandle: (source, sourceHandle) => {
+        const { edges, setEdges } = get();
+        setEdges(
+          edges.filter(
+            (edge) =>
+              !(edge.source === source && edge.sourceHandle === sourceHandle),
+          ),
+        );
+      },
+      findAgentToolNodeById: (id) => {
+        const { edges } = get();
+        return edges.find(
+          (edge) =>
+            edge.source === id && edge.sourceHandle === NodeHandleId.Tool,
+        )?.target;
+      },
+      selectNodeIds: (nodeIds) => {
+        const { nodes, setNodes } = get();
+        setNodes(
+          nodes.map((node) => ({
+            ...node,
+            selected: nodeIds.includes(node.id),
+          })),
+        );
       },
     })),
     { name: 'graph', trace: true },

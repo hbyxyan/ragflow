@@ -1,95 +1,33 @@
 import {
   IAgentForm,
+  ICategorizeForm,
   ICategorizeItem,
   ICategorizeItemResult,
 } from '@/interfaces/database/agent';
 import { DSLComponents, RAGFlowNodeType } from '@/interfaces/database/flow';
 import { removeUselessFieldsFromValues } from '@/utils/form';
-import { Edge, Node, Position, XYPosition } from '@xyflow/react';
+import { Edge, Node, XYPosition } from '@xyflow/react';
 import { FormInstance, FormListFieldData } from 'antd';
 import { humanId } from 'human-id';
 import { curry, get, intersectionWith, isEqual, omit, sample } from 'lodash';
 import pipe from 'lodash/fp/pipe';
 import isObject from 'lodash/isObject';
-import { v4 as uuidv4 } from 'uuid';
 import {
   CategorizeAnchorPointPositions,
   NoDebugOperatorsList,
   NodeHandleId,
-  NodeMap,
   Operator,
 } from './constant';
-import { IPosition } from './interface';
+import { BeginQuery, IPosition } from './interface';
 
-const buildEdges = (
-  operatorIds: string[],
-  currentId: string,
-  allEdges: Edge[],
-  isUpstream = false,
-  componentName: string,
-  nodeParams: Record<string, unknown>,
-) => {
-  operatorIds.forEach((cur) => {
-    const source = isUpstream ? cur : currentId;
-    const target = isUpstream ? currentId : cur;
-    if (!allEdges.some((e) => e.source === source && e.target === target)) {
-      const edge: Edge = {
-        id: uuidv4(),
-        label: '',
-        // type: 'step',
-        source: source,
-        target: target,
-        // markerEnd: {
-        //   type: MarkerType.ArrowClosed,
-        //   color: 'rgb(157 149 225)',
-        //   width: 20,
-        //   height: 20,
-        // },
-      };
-      if (componentName === Operator.Categorize && !isUpstream) {
-        const categoryDescription =
-          nodeParams.category_description as ICategorizeItemResult;
+function buildAgentExceptionGoto(edges: Edge[], nodeId: string) {
+  const exceptionEdges = edges.filter(
+    (x) =>
+      x.source === nodeId && x.sourceHandle === NodeHandleId.AgentException,
+  );
 
-        const name = Object.keys(categoryDescription).find(
-          (x) => categoryDescription[x].to === target,
-        );
-
-        if (name) {
-          edge.sourceHandle = name;
-        }
-      }
-      allEdges.push(edge);
-    }
-  });
-};
-
-export const buildNodesAndEdgesFromDSLComponents = (data: DSLComponents) => {
-  const nodes: Node[] = [];
-  let edges: Edge[] = [];
-
-  Object.entries(data).forEach(([key, value]) => {
-    const downstream = [...value.downstream];
-    const upstream = [...value.upstream];
-    const { component_name: componentName, params } = value.obj;
-    nodes.push({
-      id: key,
-      type: NodeMap[value.obj.component_name as Operator] || 'ragNode',
-      position: { x: 0, y: 0 },
-      data: {
-        label: componentName,
-        name: humanId(),
-        form: params,
-      },
-      sourcePosition: Position.Left,
-      targetPosition: Position.Right,
-    });
-
-    buildEdges(upstream, key, edges, true, componentName, params);
-    buildEdges(downstream, key, edges, false, componentName, params);
-  });
-
-  return { nodes, edges };
-};
+  return exceptionEdges.map((x) => x.target);
+}
 
 const buildComponentDownstreamOrUpstream = (
   edges: Edge[],
@@ -102,7 +40,9 @@ const buildComponentDownstreamOrUpstream = (
       const node = nodes.find((x) => x.id === nodeId);
       let isNotUpstreamTool = true;
       let isNotUpstreamAgent = true;
+      let isNotExceptionGoto = true;
       if (isBuildDownstream && node?.data.label === Operator.Agent) {
+        isNotExceptionGoto = y.sourceHandle !== NodeHandleId.AgentException;
         // Exclude the tool operator downstream of the agent operator
         isNotUpstreamTool = !y.target.startsWith(Operator.Tool);
         // Exclude the agent operator downstream of the agent operator
@@ -114,7 +54,8 @@ const buildComponentDownstreamOrUpstream = (
       return (
         y[isBuildDownstream ? 'source' : 'target'] === nodeId &&
         isNotUpstreamTool &&
-        isNotUpstreamAgent
+        isNotUpstreamAgent &&
+        isNotExceptionGoto
       );
     })
     .map((y) => y[isBuildDownstream ? 'target' : 'source']);
@@ -149,13 +90,51 @@ function buildAgentTools(edges: Edge[], nodes: Node[], nodeId: string) {
 
     (params as IAgentForm).tools = (params as IAgentForm).tools.concat(
       bottomSubAgentEdges.map((x) => {
-        const formData = buildAgentTools(edges, nodes, x.target);
+        const {
+          params: formData,
+          id,
+          name,
+        } = buildAgentTools(edges, nodes, x.target);
 
-        return { component_name: Operator.Agent, params: { ...formData } };
+        return {
+          component_name: Operator.Agent,
+          id,
+          name: name as string, // Cast name to string and provide fallback
+          params: { ...formData },
+        };
       }),
     );
   }
-  return params;
+  return { params, name: node?.data.name, id: node?.id };
+}
+
+function filterTargetsBySourceHandleId(edges: Edge[], handleId: string) {
+  return edges.filter((x) => x.sourceHandle === handleId).map((x) => x.target);
+}
+
+function buildCategorize(edges: Edge[], nodes: Node[], nodeId: string) {
+  const node = nodes.find((x) => x.id === nodeId);
+  const params = { ...(node?.data.form ?? {}) } as ICategorizeForm;
+  if (node && node.data.label === Operator.Categorize) {
+    const subEdges = edges.filter((x) => x.source === nodeId);
+
+    const items = params.items || [];
+
+    const nextCategoryDescription = items.reduce<
+      ICategorizeForm['category_description']
+    >((pre, val) => {
+      const key = val.name;
+      pre[key] = {
+        ...omit(val, 'name', 'uuid'),
+        examples: val.examples?.map((x) => x.value) || [],
+        to: filterTargetsBySourceHandleId(subEdges, val.uuid),
+      };
+      return pre;
+    }, {});
+
+    params.category_description = nextCategoryDescription;
+  }
+  return omit(params, 'items');
 }
 
 const buildOperatorParams = (operatorName: string) =>
@@ -190,8 +169,25 @@ export const buildDslComponentsByGraph = (
     .forEach((x) => {
       const id = x.id;
       const operatorName = x.data.label;
+      let params = x?.data.form ?? {};
 
-      const params = buildAgentTools(edges, nodes, id);
+      switch (operatorName) {
+        case Operator.Agent: {
+          const { params: formData } = buildAgentTools(edges, nodes, id);
+          params = {
+            ...formData,
+            exception_goto: buildAgentExceptionGoto(edges, id),
+          };
+          break;
+        }
+        case Operator.Categorize:
+          params = buildCategorize(edges, nodes, id);
+          break;
+
+        default:
+          break;
+      }
+
       components[id] = {
         obj: {
           ...(oldDslComponents[id]?.obj ?? {}),
@@ -506,7 +502,7 @@ export const buildCategorizeObjectFromList = (list: Array<ICategorizeItem>) => {
     if (cur?.name) {
       pre[cur.name] = {
         ...omit(cur, 'name', 'examples'),
-        examples: convertToStringArray(cur.examples),
+        examples: convertToStringArray(cur.examples) as string[],
       };
     }
     return pre;
@@ -515,6 +511,11 @@ export const buildCategorizeObjectFromList = (list: Array<ICategorizeItem>) => {
 
 export function getAgentNodeTools(agentNode?: RAGFlowNodeType) {
   const tools: IAgentForm['tools'] = get(agentNode, 'data.form.tools', []);
+  return tools;
+}
+
+export function getAgentNodeMCP(agentNode?: RAGFlowNodeType) {
+  const tools: IAgentForm['mcp'] = get(agentNode, 'data.form.mcp', []);
   return tools;
 }
 
@@ -536,4 +537,22 @@ export function mapEdgeMouseEvent(
   );
 
   return nextEdges;
+}
+
+export function buildBeginQueryWithObject(
+  inputs: Record<string, BeginQuery>,
+  values: BeginQuery[],
+) {
+  const nextInputs = Object.keys(inputs).reduce<Record<string, BeginQuery>>(
+    (pre, key) => {
+      const item = values.find((x) => x.key === key);
+      if (item) {
+        pre[key] = { ...item };
+      }
+      return pre;
+    },
+    {},
+  );
+
+  return nextInputs;
 }
