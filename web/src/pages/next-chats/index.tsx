@@ -11,7 +11,8 @@ import { ChatCard } from './chat-card';
 import { useRenameChat } from './hooks/use-rename-chat';
 
 export default function ChatList() {
-  const { data, setPagination, pagination } = useFetchDialogList();
+  const { data, setPagination, pagination, handleInputChange, searchString } =
+    useFetchDialogList();
   const { t } = useTranslation();
   const {
     initialChatName,
@@ -36,7 +37,11 @@ export default function ChatList() {
   return (
     <section className="flex flex-col w-full flex-1">
       <div className="px-8 pt-8">
-        <ListFilterBar title="Chat apps">
+        <ListFilterBar
+          title="Chat apps"
+          onSearchChange={handleInputChange}
+          searchString={searchString}
+        >
           <Button onClick={handleShowCreateModal}>
             <Plus className="size-2.5" />
             {t('chat.createChat')}
@@ -44,7 +49,7 @@ export default function ChatList() {
         </ListFilterBar>
       </div>
       <div className="flex-1 overflow-auto">
-        <div className="flex flex-wrap gap-4 px-8">
+        <div className="grid gap-6 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 max-h-[84vh] overflow-auto px-8">
           {data.dialogs.map((x) => {
             return (
               <ChatCard

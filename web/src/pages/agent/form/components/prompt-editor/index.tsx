@@ -160,12 +160,12 @@ export function PromptEditor({
           placeholder={
             <div
               className={cn(
-                'absolute top-1 left-2 text-text-sub-title pointer-events-none',
+                'absolute top-1 left-2 text-text-secondary pointer-events-none',
                 {
                   'truncate w-[90%]': !multiLine,
+                  'translate-y-10': multiLine,
                 },
               )}
-              data-xxx
             >
               {placeholder || t('common.promptPlaceholder')}
             </div>

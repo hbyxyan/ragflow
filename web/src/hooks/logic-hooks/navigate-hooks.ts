@@ -24,11 +24,15 @@ export const useNavigatePage = () => {
   );
 
   const navigateToHome = useCallback(() => {
-    navigate(Routes.Home);
+    navigate(Routes.Root);
   }, [navigate]);
 
   const navigateToProfile = useCallback(() => {
     navigate(Routes.ProfileSetting);
+  }, [navigate]);
+
+  const navigateToOldProfile = useCallback(() => {
+    navigate(Routes.UserSetting);
   }, [navigate]);
 
   const navigateToChatList = useCallback(() => {
@@ -72,9 +76,12 @@ export const useNavigatePage = () => {
     navigate(Routes.Searches);
   }, [navigate]);
 
-  const navigateToSearch = useCallback(() => {
-    navigate(Routes.Search);
-  }, [navigate]);
+  const navigateToSearch = useCallback(
+    (id: string) => {
+      navigate(`${Routes.Search}/${id}`);
+    },
+    [navigate],
+  );
 
   const navigateToChunkParsedResult = useCallback(
     (id: string, knowledgeId?: string) => () => {
@@ -136,5 +143,6 @@ export const useNavigatePage = () => {
     navigateToSearch,
     navigateToFiles,
     navigateToAgentList,
+    navigateToOldProfile,
   };
 };
