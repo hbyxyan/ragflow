@@ -1,6 +1,6 @@
 <div align="center">
 <a href="https://demo.ragflow.io/">
-<img src="web/src/assets/logo-with-text.png" width="350" alt="ragflow logo">
+<img src="web/src/assets/logo-with-text.svg" width="350" alt="ragflow logo">
 </a>
 </div>
 
@@ -22,7 +22,7 @@
         <img alt="Static Badge" src="https://img.shields.io/badge/Online-Demo-4e6b99">
     </a>
     <a href="https://hub.docker.com/r/infiniflow/ragflow" target="_blank">
-        <img src="https://img.shields.io/docker/pulls/infiniflow/ragflow?label=Docker%20Pulls&color=0db7ed&logo=docker&logoColor=white&style=flat-square" alt="docker pull infiniflow/ragflow:v0.20.3">
+        <img src="https://img.shields.io/docker/pulls/infiniflow/ragflow?label=Docker%20Pulls&color=0db7ed&logo=docker&logoColor=white&style=flat-square" alt="docker pull infiniflow/ragflow:v0.23.1">
     </a>
     <a href="https://github.com/infiniflow/ragflow/releases/latest">
         <img src="https://img.shields.io/github/v/release/infiniflow/ragflow?color=blue&label=Latest%20Release" alt="Latest Release">
@@ -37,13 +37,15 @@
 
 <h4 align="center">
   <a href="https://ragflow.io/docs/dev/">Document</a> |
-  <a href="https://github.com/infiniflow/ragflow/issues/4214">Roadmap</a> |
+  <a href="https://github.com/infiniflow/ragflow/issues/12241">Roadmap</a> |
   <a href="https://twitter.com/infiniflowai">Twitter</a> |
   <a href="https://discord.gg/NjYzJD3GM3">Discord</a> |
   <a href="https://demo.ragflow.io">Demo</a>
 </h4>
 
-#
+<div align="center" style="margin-top:20px;margin-bottom:20px;">
+<img src="https://raw.githubusercontent.com/infiniflow/ragflow-docs/refs/heads/image/image/ragflow-octoverse.png" width="1200"/>
+</div>
 
 <div align="center">
 <a href="https://trendshift.io/repositories/9064" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9064" alt="infiniflow%2Fragflow | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
@@ -70,7 +72,7 @@
 
 ## 💡 RAGFlow 是什么？
 
-[RAGFlow](https://ragflow.io/) 是一款基于深度文档理解构建的开源 RAG（Retrieval-Augmented Generation）引擎。RAGFlow 可以为各种规模的企业及个人提供一套精简的 RAG 工作流程，结合大语言模型（LLM）针对用户各类不同的复杂格式数据提供可靠的问答以及有理有据的引用。
+[RAGFlow](https://ragflow.io/) 是一款领先的开源检索增强生成（[RAG](https://ragflow.io/basics/what-is-rag)）引擎，通过融合前沿的 RAG 技术与 Agent 能力，为大型语言模型提供卓越的上下文层。它提供可适配任意规模企业的端到端 RAG 工作流，凭借融合式[上下文引擎](https://ragflow.io/basics/what-is-agent-context-engine)与预置的 Agent 模板，助力开发者以极致效率与精度将复杂数据转化为高可信、生产级的人工智能系统。
 
 ## 🎮 Demo 试用
 
@@ -83,13 +85,16 @@
 
 ## 🔥 近期更新
 
-- 2025-08-08 支持 OpenAI 最新的 GPT-5 系列模型.
-- 2025-08-04 新增对 Kimi K2 和 Grok 4 等模型的支持.
+- 2025-12-26 支持AI代理的“记忆”功能。
+- 2025-11-19 支持 Gemini 3 Pro。
+- 2025-11-12 支持从 Confluence、S3、Notion、Discord、Google Drive 进行数据同步。
+- 2025-10-23 支持 MinerU 和 Docling 作为文档解析方法。
+- 2025-10-15 支持可编排的数据管道。
+- 2025-08-08 支持 OpenAI 最新的 GPT-5 系列模型。
 - 2025-08-01 支持 agentic workflow 和 MCP。
 - 2025-05-23 Agent 新增 Python/JS 代码执行器组件。
 - 2025-05-05 支持跨语言查询。
-- 2025-03-19 PDF 和 DOCX 中的图支持用多模态大模型去解析得到描述.
-- 2025-02-28 结合互联网搜索（Tavily），对于任意大模型实现类似 Deep Research 的推理功能.
+- 2025-03-19 PDF 和 DOCX 中的图支持用多模态大模型去解析得到描述。
 - 2024-12-18 升级了 DeepDoc 的文档布局分析模型。
 - 2024-08-22 支持用 RAG 技术实现从自然语言到 SQL 语句的转换。
 
@@ -132,7 +137,7 @@
 ## 🔎 系统架构
 
 <div align="center" style="margin-top:20px;margin-bottom:20px;">
-<img src="https://github.com/infiniflow/ragflow/assets/12318111/d6ac5664-c237-4200-a7c2-a4a00691b485" width="1000"/>
+<img src="https://github.com/user-attachments/assets/31b0dd6f-ca4f-445a-9457-70cb44a381b2" width="1000"/>
 </div>
 
 ## 🎬 快速开始
@@ -183,23 +188,31 @@
 > 请注意，目前官方提供的所有 Docker 镜像均基于 x86 架构构建，并不提供基于 ARM64 的 Docker 镜像。
 > 如果你的操作系统是 ARM64 架构，请参考[这篇文档](https://ragflow.io/docs/dev/build_docker_image)自行构建 Docker 镜像。
 
-   > 运行以下命令会自动下载 RAGFlow slim Docker 镜像 `v0.20.3-slim`。请参考下表查看不同 Docker 发行版的描述。如需下载不同于 `v0.20.3-slim` 的 Docker 镜像，请在运行 `docker compose` 启动服务之前先更新 **docker/.env** 文件内的 `RAGFLOW_IMAGE` 变量。比如，你可以通过设置 `RAGFLOW_IMAGE=infiniflow/ragflow:v0.20.3` 来下载 RAGFlow 镜像的 `v0.20.3` 完整发行版。
+   > 运行以下命令会自动下载 RAGFlow Docker 镜像 `v0.23.1`。请参考下表查看不同 Docker 发行版的描述。如需下载不同于 `v0.23.1` 的 Docker 镜像，请在运行 `docker compose` 启动服务之前先更新 **docker/.env** 文件内的 `RAGFLOW_IMAGE` 变量。
 
    ```bash
    $ cd ragflow/docker
-   # Use CPU for embedding and DeepDoc tasks:
+
+   # git checkout v0.23.1
+   # 可选：使用稳定版本标签（查看发布：https://github.com/infiniflow/ragflow/releases）
+   # 这一步确保代码中的 entrypoint.sh 文件与 Docker 镜像的版本保持一致。
+
+   # Use CPU for DeepDoc tasks:
    $ docker compose -f docker-compose.yml up -d
 
-   # To use GPU to accelerate embedding and DeepDoc tasks:
-   # docker compose -f docker-compose-gpu.yml up -d
+   # To use GPU to accelerate DeepDoc tasks:
+   # sed -i '1i DEVICE=gpu' .env
+   # docker compose -f docker-compose.yml up -d
    ```
 
-   | RAGFlow image tag | Image size (GB) | Has embedding models? | Stable?                  |
-   | ----------------- | --------------- | --------------------- | ------------------------ |
-   | v0.20.3           | &approx;9       | :heavy_check_mark:    | Stable release           |
-   | v0.20.3-slim      | &approx;2       | ❌                    | Stable release           |
-   | nightly           | &approx;9       | :heavy_check_mark:    | _Unstable_ nightly build |
-   | nightly-slim      | &approx;2       | ❌                     | _Unstable_ nightly build |
+   > 注意：在 `v0.22.0` 之前的版本，我们会同时提供包含 embedding 模型的镜像和不含 embedding 模型的 slim 镜像。具体如下：
+
+   | RAGFlow image tag | Image size (GB) | Has embedding models? | Stable?        |
+   |-------------------|-----------------|-----------------------|----------------|
+   | v0.21.1           | &approx;9       | ✔️                    | Stable release |
+   | v0.21.1-slim      | &approx;2       | ❌                     | Stable release |
+
+   > 从 `v0.22.0` 开始，我们只发布 slim 版本，并且不再在镜像标签后附加 **-slim** 后缀。
 
    > [!TIP]
    > 如果你遇到 Docker 镜像拉不下来的问题，可以在 **docker/.env** 文件内根据变量 `RAGFLOW_IMAGE` 的注释提示选择华为云或者阿里云的相应镜像。
@@ -210,7 +223,7 @@
 4. 服务器启动成功后再次确认服务器状态：
 
    ```bash
-   $ docker logs -f ragflow-server
+   $ docker logs -f docker-ragflow-cpu-1
    ```
 
    _出现以下界面提示说明服务器启动成功：_
@@ -225,7 +238,7 @@
     * Running on all addresses (0.0.0.0)
    ```
 
-   > 如果您在没有看到上面的提示信息出来之前，就尝试登录 RAGFlow，你的浏览器有可能会提示 `network anormal` 或 `网络异常`。
+   > 如果您在没有看到上面的提示信息出来之前，就尝试登录 RAGFlow，你的浏览器有可能会提示 `network abnormal` 或 `网络异常`。
 
 5. 在你的浏览器中输入你的服务器对应的 IP 地址并登录 RAGFlow。
    > 上面这个例子中，您只需输入 http://IP_OF_YOUR_MACHINE 即可：未改动过配置则无需输入端口（默认的 HTTP 服务端口 80）。
@@ -279,29 +292,28 @@ RAGFlow 默认使用 Elasticsearch 存储文本和向量数据. 如果要切换�
 > [!WARNING]
 > Infinity 目前官方并未正式支持在 Linux/arm64 架构下的机器上运行.
 
-## 🔧 源码编译 Docker 镜像（不含 embedding 模型）
+## 🔧 源码编译 Docker 镜像
 
 本 Docker 镜像大小约 2 GB 左右并且依赖外部的大模型和 embedding 服务。
 
 ```bash
 git clone https://github.com/infiniflow/ragflow.git
 cd ragflow/
-docker build --platform linux/amd64 --build-arg LIGHTEN=1 --build-arg NEED_MIRROR=1 -f Dockerfile -t infiniflow/ragflow:nightly-slim .
+docker build --platform linux/amd64 -f Dockerfile -t infiniflow/ragflow:nightly .
 ```
 
-## 🔧 源码编译 Docker 镜像（包含 embedding 模型）
-
-本 Docker 大小约 9 GB 左右。由于已包含 embedding 模型，所以只需依赖外部的大模型服务即可。
+如果您处在代理环境下，可以传递代理参数：
 
 ```bash
-git clone https://github.com/infiniflow/ragflow.git
-cd ragflow/
-docker build --platform linux/amd64 --build-arg NEED_MIRROR=1 -f Dockerfile -t infiniflow/ragflow:nightly .
+docker build --platform linux/amd64 \
+  --build-arg http_proxy=http://YOUR_PROXY:PORT \
+  --build-arg https_proxy=http://YOUR_PROXY:PORT \
+  -f Dockerfile -t infiniflow/ragflow:nightly .
 ```
 
 ## 🔨 以源代码启动服务
 
-1. 安装 uv。如已经安装，可跳过本步骤：
+1. 安装 `uv` 和 `pre-commit`。如已经安装，可跳过本步骤：
 
    ```bash
    pipx install uv pre-commit
@@ -313,7 +325,7 @@ docker build --platform linux/amd64 --build-arg NEED_MIRROR=1 -f Dockerfile -t i
    ```bash
    git clone https://github.com/infiniflow/ragflow.git
    cd ragflow/
-   uv sync --python 3.10 --all-extras # install RAGFlow dependent python modules
+   uv sync --python 3.12 # install RAGFlow dependent python modules
    uv run download_deps.py
    pre-commit install
    ```
@@ -342,6 +354,8 @@ docker build --platform linux/amd64 --build-arg NEED_MIRROR=1 -f Dockerfile -t i
    sudo apt-get install libjemalloc-dev
    # centos
    sudo yum install jemalloc
+   # mac
+   sudo brew install jemalloc
    ```
 
 6. 启动后端服务：
@@ -388,7 +402,7 @@ docker build --platform linux/amd64 --build-arg NEED_MIRROR=1 -f Dockerfile -t i
 
 ## 📜 路线图
 
-详见 [RAGFlow Roadmap 2025](https://github.com/infiniflow/ragflow/issues/4214) 。
+详见 [RAGFlow Roadmap 2026](https://github.com/infiniflow/ragflow/issues/12241) 。
 
 ## 🏄 开源社区
 

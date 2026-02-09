@@ -1,11 +1,15 @@
 // src/pages/next-searches/hooks.ts
 
 import message from '@/components/ui/message';
-import searchService from '@/services/search-service';
+import { useSetModalState } from '@/hooks/common-hooks';
+import { useHandleSearchChange } from '@/hooks/logic-hooks';
+import { useNavigatePage } from '@/hooks/logic-hooks/navigate-hooks';
+import searchService, { searchServiceNext } from '@/services/search-service';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useDebounce } from 'ahooks';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useParams, useSearchParams } from 'umi';
+import { useParams, useSearchParams } from 'react-router';
 interface CreateSearchProps {
   name: string;
   description?: string;
@@ -82,21 +86,34 @@ interface SearchListResponse {
   message: string;
 }
 
-export const useFetchSearchList = (params?: SearchListParams) => {
-  const [searchParams, setSearchParams] = useState<SearchListParams>({
-    page: 1,
-    page_size: 10,
-    ...params,
-  });
+export const useFetchSearchList = () => {
+  const { handleInputChange, searchString, pagination, setPagination } =
+    useHandleSearchChange();
+  const debouncedSearchString = useDebounce(searchString, { wait: 500 });
 
   const { data, isLoading, isError, refetch } = useQuery<
     SearchListResponse,
     Error
   >({
-    queryKey: ['searchList', searchParams],
+    queryKey: [
+      'searchList',
+      {
+        debouncedSearchString,
+        ...pagination,
+      },
+    ],
     queryFn: async () => {
-      const { data: response } =
-        await searchService.getSearchList(searchParams);
+      const { data: response } = await searchServiceNext.getSearchList(
+        {
+          params: {
+            keywords: debouncedSearchString,
+            page_size: pagination.pageSize,
+            page: pagination.current,
+          },
+          data: {},
+        },
+        true,
+      );
       if (response.code !== 0) {
         throw new Error(response.message || 'Failed to fetch search list');
       }
@@ -104,19 +121,14 @@ export const useFetchSearchList = (params?: SearchListParams) => {
     },
   });
 
-  const setSearchListParams = (newParams: SearchListParams) => {
-    setSearchParams((prevParams) => ({
-      ...prevParams,
-      ...newParams,
-    }));
-  };
-
   return {
     data,
     isLoading,
     isError,
-    searchParams,
-    setSearchListParams,
+    pagination,
+    searchString,
+    handleInputChange,
+    setPagination,
     refetch,
   };
 };
@@ -154,6 +166,7 @@ export interface ISearchAppDetailProps {
   search_config: {
     cross_languages: string[];
     doc_ids: string[];
+    chat_id: string;
     highlight: boolean;
     kb_ids: string[];
     keyword: boolean;
@@ -294,4 +307,75 @@ export const useUpdateSearch = () => {
   );
 
   return { data, isError, updateSearch };
+};
+
+export const useRenameSearch = () => {
+  const [search, setSearch] = useState<ISearchAppProps>({} as ISearchAppProps);
+  const { navigateToSearch } = useNavigatePage();
+  const {
+    visible: openCreateModal,
+    hideModal: hideChatRenameModal,
+    showModal: showChatRenameModal,
+  } = useSetModalState();
+  const { updateSearch } = useUpdateSearch();
+  const { createSearch } = useCreateSearch();
+  const [loading, setLoading] = useState(false);
+
+  const handleShowChatRenameModal = useCallback(
+    (record?: ISearchAppProps) => {
+      if (record) {
+        setSearch(record);
+      }
+      showChatRenameModal();
+    },
+    [showChatRenameModal],
+  );
+
+  const handleHideModal = useCallback(() => {
+    hideChatRenameModal();
+    setSearch({} as ISearchAppProps);
+  }, [hideChatRenameModal]);
+
+  const onSearchRenameOk = useCallback(
+    async (name: string, callBack?: () => void) => {
+      let res;
+      setLoading(true);
+      if (search?.id) {
+        try {
+          const reponse = await searchService.getSearchDetail({
+            search_id: search?.id,
+          });
+          const detail = reponse.data?.data;
+          console.log('detail-->', detail);
+
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { id, created_by, update_time, ...searchDataTemp } = detail;
+          res = await updateSearch({
+            ...searchDataTemp,
+            name: name,
+            search_id: search?.id,
+          } as unknown as IUpdateSearchProps);
+        } catch (e) {
+          console.error('error', e);
+        }
+      } else {
+        res = await createSearch({ name: name });
+      }
+      if (res && !search?.id) {
+        navigateToSearch(res?.search_id)();
+      }
+      callBack?.();
+      setLoading(false);
+      handleHideModal();
+    },
+    [search, createSearch, handleHideModal, navigateToSearch, updateSearch],
+  );
+  return {
+    searchRenameLoading: loading,
+    initialSearchName: search?.name,
+    onSearchRenameOk,
+    openCreateModal,
+    hideSearchRenameModal: handleHideModal,
+    showSearchRenameModal: handleShowChatRenameModal,
+  };
 };

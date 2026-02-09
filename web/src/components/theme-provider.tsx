@@ -21,7 +21,7 @@ const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
 
 export function ThemeProvider({
   children,
-  defaultTheme = ThemeEnum.Light,
+  defaultTheme = ThemeEnum.Dark,
   storageKey = 'vite-ui-theme',
   ...props
 }: ThemeProviderProps) {
@@ -70,4 +70,14 @@ export function useSwitchToDarkThemeOnMount() {
   useEffect(() => {
     setTheme(ThemeEnum.Dark);
   }, [setTheme]);
+}
+
+export function useSyncThemeFromParams(theme: string | null) {
+  const { setTheme } = useTheme();
+
+  useEffect(() => {
+    if (theme && (theme === ThemeEnum.Light || theme === ThemeEnum.Dark)) {
+      setTheme(theme as ThemeEnum);
+    }
+  }, [theme, setTheme]);
 }

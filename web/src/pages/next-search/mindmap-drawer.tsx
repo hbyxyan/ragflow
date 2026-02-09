@@ -3,13 +3,13 @@ import { Progress } from '@/components/ui/progress';
 import { IModalProps } from '@/interfaces/common';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { usePendingMindMap } from '../search/hooks';
+import { usePendingMindMap } from './hooks';
 
 interface IProps extends IModalProps<any> {
   data: any;
 }
 
-const MindMapDrawer = ({ data, hideModal, visible, loading }: IProps) => {
+const MindMapDrawer = ({ data, hideModal, loading }: IProps) => {
   const { t } = useTranslation();
   const percent = usePendingMindMap();
   return (

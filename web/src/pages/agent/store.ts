@@ -1,4 +1,5 @@
-import { RAGFlowNodeType } from '@/interfaces/database/flow';
+import type { IAgentForm } from '@/interfaces/database/agent';
+import { IAgentNode, RAGFlowNodeType } from '@/interfaces/database/flow';
 import type {} from '@redux-devtools/extension';
 import {
   Connection,
@@ -14,10 +15,15 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
 } from '@xyflow/react';
-import { omit } from 'lodash';
-import differenceWith from 'lodash/differenceWith';
-import intersectionWith from 'lodash/intersectionWith';
-import lodashSet from 'lodash/set';
+import humanId from 'human-id';
+import {
+  cloneDeep,
+  differenceWith,
+  intersectionWith,
+  get as lodashGet,
+  set as lodashSet,
+  omit,
+} from 'lodash';
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
@@ -26,11 +32,25 @@ import {
   duplicateNodeForm,
   generateDuplicateNode,
   generateNodeNamesWithIncreasingIndex,
+  getAgentNodeTools,
   getOperatorIndex,
   isEdgeEqual,
   mapEdgeMouseEvent,
 } from './utils';
 import { deleteAllDownstreamAgentsAndTool } from './utils/delete-node';
+
+type IAgentTool = IAgentForm['tools'][number];
+
+interface GetAgentToolByIdFunc {
+  (id: string): IAgentTool | undefined;
+  (id: string, agentNode: RAGFlowNodeType): IAgentTool | undefined;
+  (id: string, agentNodeId: string): IAgentTool | undefined;
+}
+
+interface UpdateAgentToolByIdFunc {
+  (agentNode: RAGFlowNodeType, id: string, value?: Partial<IAgentTool>): void;
+  (agentNodeId: string, id: string, value?: Partial<IAgentTool>): void;
+}
 
 export type RFState = {
   nodes: RAGFlowNodeType[];
@@ -53,6 +73,7 @@ export type RFState = {
     values: any,
     path?: (string | number)[],
   ) => RAGFlowNodeType[];
+  replaceNodeForm: (nodeId: string, values: any) => void;
   onSelectionChange: OnSelectionChangeFunc;
   addNode: (nodes: RAGFlowNodeType) => void;
   getNode: (id?: string | null) => RAGFlowNodeType | undefined;
@@ -80,6 +101,11 @@ export type RFState = {
   getParentIdById: (id?: string | null) => string | undefined;
   updateNodeName: (id: string, name: string) => void;
   generateNodeName: (name: string) => string;
+  generateAgentToolName: (id: string, name: string) => string;
+  generateAgentToolId: (prefix: string) => string;
+  getAllAgentTools: () => IAgentTool[];
+  getAgentToolById: GetAgentToolByIdFunc;
+  updateAgentToolById: UpdateAgentToolByIdFunc;
   setClickedNodeId: (id?: string) => void;
   setClickedToolId: (id?: string) => void;
   findUpstreamNodeById: (id?: string | null) => RAGFlowNodeType | undefined;
@@ -89,6 +115,7 @@ export type RFState = {
   ) => void; // Deleting a condition of a classification operator will delete the related edge
   findAgentToolNodeById: (id: string | null) => string | undefined;
   selectNodeIds: (nodeIds: string[]) => void;
+  hasChildNode: (nodeId: string) => boolean;
 };
 
 // this is our useStore hook that we can use in our components to get parts of the store and call actions
@@ -103,7 +130,10 @@ const useGraphStore = create<RFState>()(
       clickedToolId: '',
       onNodesChange: (changes) => {
         set({
-          nodes: applyNodeChanges(changes, get().nodes),
+          nodes: applyNodeChanges(
+            changes, // The issue of errors when using templates was resolved by using cloneDeep.
+            cloneDeep(get().nodes) as RAGFlowNodeType[], //   Cannot assign to read only property 'width' of object '#<Object>'
+          ),
         });
       },
       onEdgesChange: (changes: EdgeChange[]) => {
@@ -127,8 +157,9 @@ const useGraphStore = create<RFState>()(
       },
       onConnect: (connection: Connection) => {
         const { updateFormDataOnConnect } = get();
+        const newEdges = addEdge(connection, get().edges);
         set({
-          edges: addEdge(connection, get().edges),
+          edges: newEdges,
         });
         updateFormDataOnConnect(connection);
       },
@@ -204,6 +235,7 @@ const useGraphStore = create<RFState>()(
         set({ nodes: nextNodes });
       },
       getNode: (id?: string | null) => {
+        // console.log('getNode', id, get().nodes);
         return get().nodes.find((x) => x.id === id);
       },
       getOperatorTypeFromId: (id?: string | null) => {
@@ -294,12 +326,7 @@ const useGraphStore = create<RFState>()(
         });
       },
       deleteEdgeById: (id: string) => {
-        const {
-          edges,
-          updateNodeForm,
-          getOperatorTypeFromId,
-          updateSwitchFormData,
-        } = get();
+        const { edges, getOperatorTypeFromId, updateSwitchFormData } = get();
         const currentEdge = edges.find((x) => x.id === id);
 
         if (currentEdge) {
@@ -307,11 +334,6 @@ const useGraphStore = create<RFState>()(
           const operatorType = getOperatorTypeFromId(source);
           // After deleting the edge, set the corresponding field in the node's form field to undefined
           switch (operatorType) {
-            case Operator.Relevant:
-              updateNodeForm(source, {
-                [sourceHandle as string]: undefined,
-              });
-              break;
             // case Operator.Categorize:
             //   if (sourceHandle)
             //     updateNodeForm(source, undefined, [
@@ -430,8 +452,21 @@ const useGraphStore = create<RFState>()(
 
         return nextNodes;
       },
+      replaceNodeForm(nodeId, values) {
+        if (nodeId) {
+          set((state) => {
+            for (const node of state.nodes) {
+              if (node.id === nodeId) {
+                //cloneDeep Solving the issue of react-hook-form errors
+                node.data.form = cloneDeep(values); // TypeError: Cannot assign to read only property '0' of object '[object Array]'
+                break;
+              }
+            }
+          });
+        }
+      },
       updateSwitchFormData: (source, sourceHandle, target, isConnecting) => {
-        const { updateNodeForm, edges } = get();
+        const { updateNodeForm, edges, getOperatorTypeFromId } = get();
         if (sourceHandle) {
           // A handle will connect to multiple downstream nodes
           let currentHandleTargets = edges
@@ -439,7 +474,8 @@ const useGraphStore = create<RFState>()(
               (x) =>
                 x.source === source &&
                 x.sourceHandle === sourceHandle &&
-                typeof x.target === 'string',
+                typeof x.target === 'string' &&
+                getOperatorTypeFromId(x.target) !== Operator.Placeholder,
             )
             .map((x) => x.target);
 
@@ -473,14 +509,13 @@ const useGraphStore = create<RFState>()(
       },
       updateNodeName: (id, name) => {
         if (id) {
-          set({
-            nodes: get().nodes.map((node) => {
+          set((state) => {
+            for (const node of state.nodes) {
               if (node.id === id) {
                 node.data.name = name;
+                break;
               }
-
-              return node;
-            }),
+            }
           });
         }
       },
@@ -491,6 +526,95 @@ const useGraphStore = create<RFState>()(
         const { nodes } = get();
 
         return generateNodeNamesWithIncreasingIndex(name, nodes);
+      },
+      generateAgentToolName: (id: string, name: string) => {
+        const node = get().nodes.find(
+          (x) => x.id === id,
+        ) as IAgentNode<IAgentForm>;
+
+        if (!node) {
+          return '';
+        }
+
+        const tools = (node.data.form!.tools as any[]).filter(
+          (x) => x.component_name === name,
+        );
+        const lastIndex = tools.length
+          ? (tools
+              .map((x) => {
+                const idx = x.name.match(/(\d+)$/)?.[1];
+                return idx && isNaN(idx) ? -1 : Number(idx);
+              })
+              .sort((a, b) => a - b)
+              .at(-1) ?? -1)
+          : -1;
+
+        return `${name}_${lastIndex + 1}`;
+      },
+      generateAgentToolId: (prefix: string) => {
+        const allAgentToolIds = get()
+          .getAllAgentTools()
+          .map((t) => t.id || t.component_name);
+
+        let id: string;
+
+        // Loop for avoiding id collisions
+        do {
+          id = `${prefix}:${humanId()}`;
+        } while (allAgentToolIds.includes(id));
+
+        return id;
+      },
+      getAllAgentTools: () => {
+        return get()
+          .nodes.filter((n) => n?.data?.label === Operator.Agent)
+          .flatMap((n) => n?.data?.form?.tools);
+      },
+      getAgentToolById: (
+        id: string,
+        nodeOrNodeId?: RAGFlowNodeType | string,
+      ) => {
+        // eslint-disable-next-line eqeqeq
+        const tools =
+          nodeOrNodeId != null
+            ? getAgentNodeTools(
+                typeof nodeOrNodeId === 'string'
+                  ? get().getNode(nodeOrNodeId)
+                  : nodeOrNodeId,
+              )
+            : get().getAllAgentTools();
+
+        // For backward compatibility
+        return tools.find((t) => (t.id || t.component_name) === id);
+      },
+      updateAgentToolById: (
+        nodeOrNodeId: RAGFlowNodeType | string,
+        id: string,
+        value?: Partial<IAgentTool>,
+      ) => {
+        const { getNode, updateNodeForm } = get();
+
+        const agentNode =
+          typeof nodeOrNodeId === 'string'
+            ? getNode(nodeOrNodeId)
+            : nodeOrNodeId;
+
+        if (!agentNode) {
+          return;
+        }
+
+        const toolIndex = getAgentNodeTools(agentNode).findIndex(
+          (t) => (t.id || t.component_name) === id,
+        );
+
+        updateNodeForm(
+          agentNode.id,
+          {
+            ...lodashGet(agentNode.data.form, ['tools', toolIndex], {}),
+            ...(value ?? {}),
+          },
+          ['tools', toolIndex],
+        );
       },
       setClickedToolId: (id?: string) => {
         set({ clickedToolId: id });
@@ -524,6 +648,10 @@ const useGraphStore = create<RFState>()(
             selected: nodeIds.includes(node.id),
           })),
         );
+      },
+      hasChildNode: (nodeId) => {
+        const { edges } = get();
+        return edges.some((edge) => edge.source === nodeId);
       },
     })),
     { name: 'graph', trace: true },

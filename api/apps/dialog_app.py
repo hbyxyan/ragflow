@@ -14,25 +14,25 @@
 #  limitations under the License.
 #
 
-from flask import request
-from flask_login import login_required, current_user
+from quart import request
 from api.db.services import duplicate_name
 from api.db.services.dialog_service import DialogService
-from api.db import StatusEnum
+from common.constants import StatusEnum
 from api.db.services.tenant_llm_service import TenantLLMService
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.user_service import TenantService, UserTenantService
-from api import settings
-from api.utils.api_utils import server_error_response, get_data_error_result, validate_request
-from api.utils import get_uuid
-from api.utils.api_utils import get_json_result
+from api.utils.api_utils import get_data_error_result, get_json_result, get_request_json, server_error_response, validate_request
+from common.misc_utils import get_uuid
+from common.constants import RetCode
+from api.apps import login_required, current_user
+import logging
 
 
 @manager.route('/set', methods=['POST'])  # noqa: F821
 @validate_request("prompt_config")
 @login_required
-def set_dialog():
-    req = request.json
+async def set_dialog():
+    req = await get_request_json()
     dialog_id = req.get("dialog_id", "")
     is_create = not dialog_id
     name = req.get("name", "New Dialog")
@@ -43,13 +43,19 @@ def set_dialog():
     if len(name.encode("utf-8")) > 255:
         return get_data_error_result(message=f"Dialog name length is {len(name)} which is larger than 255")
 
-    if is_create and DialogService.query(tenant_id=current_user.id, name=name.strip()):
-        name = name.strip()
-        name = duplicate_name(
-            DialogService.query,
-            name=name,
-            tenant_id=current_user.id,
-            status=StatusEnum.VALID.value)
+    name = name.strip()
+    if is_create:
+        # only for chat creating
+        existing_names = {
+            d.name.casefold()
+            for d in DialogService.query(tenant_id=current_user.id, status=StatusEnum.VALID.value)
+            if d.name
+        }
+        if name.casefold() in existing_names:
+            def _name_exists(name: str, **_kwargs) -> bool:
+                return name.casefold() in existing_names
+
+            name = duplicate_name(_name_exists, name=name)
 
     description = req.get("description", "A helpful dialog")
     icon = req.get("icon", "")
@@ -64,16 +70,30 @@ def set_dialog():
     meta_data_filter = req.get("meta_data_filter", {})
     prompt_config = req["prompt_config"]
 
-    if not is_create:
-        if not req.get("kb_ids", []) and not prompt_config.get("tavily_api_key") and "{knowledge}" in prompt_config['system']:
-            return get_data_error_result(message="Please remove `{knowledge}` in system prompt since no knowledge base/Tavily used here.")
+    # Set default parameters for datasets with knowledge retrieval
+    # All datasets with {knowledge} in system prompt need "knowledge" parameter to enable retrieval
+    kb_ids = req.get("kb_ids", [])
+    parameters = prompt_config.get("parameters")
+    logging.debug(f"set_dialog: kb_ids={kb_ids}, parameters={parameters}, is_create={not is_create}")
+    # Check if parameters is missing, None, or empty list
+    if kb_ids and not parameters:
+        # Check if system prompt uses {knowledge} placeholder
+        if "{knowledge}" in prompt_config.get("system", ""):
+            # Set default parameters for any dataset with knowledge placeholder
+            prompt_config["parameters"] = [{"key": "knowledge", "optional": False}]
+            logging.debug(f"Set default parameters for datasets with knowledge placeholder: {kb_ids}")
 
-        for p in prompt_config["parameters"]:
-            if p["optional"]:
-                continue
-            if prompt_config["system"].find("{%s}" % p["key"]) < 0:
-                return get_data_error_result(
-                    message="Parameter '{}' is not used".format(p["key"]))
+    if not is_create:
+        # only for chat updating
+        if not req.get("kb_ids", []) and not prompt_config.get("tavily_api_key") and "{knowledge}" in prompt_config.get("system", ""):
+            return get_data_error_result(message="Please remove `{knowledge}` in system prompt since no dataset / Tavily used here.")
+
+    for p in prompt_config.get("parameters", []):
+        if p["optional"]:
+            continue
+        if prompt_config.get("system", "").find("{%s}" % p["key"]) < 0:
+            return get_data_error_result(
+                message="Parameter '{}' is not used".format(p["key"]))
 
     try:
         e, tenant = TenantService.get_by_id(current_user.id)
@@ -154,33 +174,34 @@ def get_kb_names(kb_ids):
 @login_required
 def list_dialogs():
     try:
-        diags = DialogService.query(
+        conversations = DialogService.query(
             tenant_id=current_user.id,
             status=StatusEnum.VALID.value,
             reverse=True,
             order_by=DialogService.model.create_time)
-        diags = [d.to_dict() for d in diags]
-        for d in diags:
-            d["kb_ids"], d["kb_names"] = get_kb_names(d["kb_ids"])
-        return get_json_result(data=diags)
+        conversations = [d.to_dict() for d in conversations]
+        for conversation in conversations:
+            conversation["kb_ids"], conversation["kb_names"] = get_kb_names(conversation["kb_ids"])
+        return get_json_result(data=conversations)
     except Exception as e:
         return server_error_response(e)
 
 
 @manager.route('/next', methods=['POST'])  # noqa: F821
 @login_required
-def list_dialogs_next():
-    keywords = request.args.get("keywords", "")
-    page_number = int(request.args.get("page", 0))
-    items_per_page = int(request.args.get("page_size", 0))
-    parser_id = request.args.get("parser_id")
-    orderby = request.args.get("orderby", "create_time")
-    if request.args.get("desc", "true").lower() == "false":
+async def list_dialogs_next():
+    args = request.args
+    keywords = args.get("keywords", "")
+    page_number = int(args.get("page", 0))
+    items_per_page = int(args.get("page_size", 0))
+    parser_id = args.get("parser_id")
+    orderby = args.get("orderby", "create_time")
+    if args.get("desc", "true").lower() == "false":
         desc = False
     else:
         desc = True
 
-    req = request.get_json()
+    req = await get_request_json()
     owner_ids = req.get("owner_ids", [])
     try:
         if not owner_ids:
@@ -207,8 +228,8 @@ def list_dialogs_next():
 @manager.route('/rm', methods=['POST'])  # noqa: F821
 @login_required
 @validate_request("dialog_ids")
-def rm():
-    req = request.json
+async def rm():
+    req = await get_request_json()
     dialog_list=[]
     tenants = UserTenantService.query(user_id=current_user.id)
     try:
@@ -219,7 +240,7 @@ def rm():
             else:
                 return get_json_result(
                     data=False, message='Only owner of dialog authorized for this operation.',
-                    code=settings.RetCode.OPERATING_ERROR)
+                    code=RetCode.OPERATING_ERROR)
             dialog_list.append({"id": id,"status":StatusEnum.INVALID.value})
         DialogService.update_many_by_id(dialog_list)
         return get_json_result(data=True)

@@ -159,6 +159,23 @@ export default {
       html4excelTip: `Usar junto con el método de fragmentación General. Cuando está desactivado, los archivos de hoja de cálculo (XLSX, XLS (Excel 97-2003)) se analizan línea por línea como pares clave-valor. Cuando está activado, los archivos de hoja de cálculo se convierten en tablas HTML. Si la tabla original tiene más de 12 filas, el sistema la dividirá automáticamente en varias tablas HTML cada 12 filas. Para más información, consulte https://ragflow.io/docs/dev/enable_excel2html.`,
     },
 
+    knowledgeConfiguration: {
+      paddleocrOptions: 'Opciones de PaddleOCR',
+      paddleocrApiUrl: 'URL de API de PaddleOCR',
+      paddleocrApiUrlTip:
+        'La URL del endpoint de la API para el servicio PaddleOCR',
+      paddleocrApiUrlPlaceholder: 'ej: https://servidor-paddleocr.com/api',
+      paddleocrAccessToken: 'Token de acceso de AI Studio',
+      paddleocrAccessTokenTip:
+        'Token de acceso para la API de PaddleOCR (opcional)',
+      paddleocrAccessTokenPlaceholder: 'Su token de AI Studio (opcional)',
+      paddleocrAlgorithm: 'Algoritmo de PaddleOCR',
+      paddleocrAlgorithmTip:
+        'Algoritmo a utilizar para el análisis de PaddleOCR',
+      paddleocrSelectAlgorithm: 'Seleccionar algoritmo',
+      paddleocrModelNamePlaceholder: 'ej: paddleocr-desde-env-1',
+    },
+
     // Otros bloques de traducción
     // Continua con la misma estructura
     chat: {
@@ -230,8 +247,7 @@ export default {
         'Similar a la penalización por presencia, esto reduce la tendencia del modelo a repetir las mismas palabras con frecuencia.',
       maxTokens: 'Máximo de tokens',
       maxTokensMessage: 'El máximo de tokens es obligatorio',
-      maxTokensTip:
-        'Esto establece la longitud máxima de la salida del modelo, medida en el número de tokens (palabras o piezas de palabras).',
+      maxTokensTip: `El tamaño máximo de contexto del modelo; un valor no válido o incorrecto provocará un error. Valor predeterminado: 512.`,
       maxTokensInvalidMessage:
         'Por favor, ingresa un número válido para Max Tokens.',
       maxTokensMinMessage: 'Max Tokens no puede ser menor que 0.',
@@ -286,8 +302,7 @@ export default {
       profileDescription: 'Actualiza tu foto y tus datos personales aquí.',
       maxTokens: 'Máximo de tokens',
       maxTokensMessage: 'El máximo de tokens es obligatorio',
-      maxTokensTip:
-        'Esto establece la longitud máxima de la salida del modelo, medida en el número de tokens (palabras o piezas de palabras).',
+      maxTokensTip: `El tamaño máximo de contexto del modelo; un valor no válido o incorrecto provocará un error. Valor predeterminado: 512.`,
       maxTokensInvalidMessage:
         'Por favor, ingresa un número válido para Max Tokens.',
       maxTokensMinMessage: 'Max Tokens no puede ser menor que 0.',
@@ -340,6 +355,14 @@ export default {
       baseUrl: 'URL base',
       baseUrlTip:
         'Si tu clave API es de OpenAI, ignora esto. Cualquier otro proveedor intermedio proporcionará esta URL base junto con la clave API.',
+      tongyiBaseUrlTip:
+        'Para usuarios chinos, no es necesario rellenar o usar https://dashscope.aliyuncs.com/compatible-mode/v1. Para usuarios internacionales, usar https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+      tongyiBaseUrlPlaceholder:
+        '(Solo para usuarios internacionales, por favor ver consejo)',
+      minimaxBaseUrlTip:
+        'Solo usuarios internacionales: utilice https://api.minimax.io/v1.',
+      minimaxBaseUrlPlaceholder:
+        '(Solo usuarios internacionales, ingrese https://api.minimax.io/v1)',
       modify: 'Modificar',
       systemModelSettings: 'Establecer modelos predeterminados',
       chatModel: 'Modelo de chat',
@@ -371,6 +394,18 @@ export default {
       modelTypeMessage: '¡Por favor ingresa el tipo de tu modelo!',
       addLlmBaseUrl: 'URL base',
       baseUrlNameMessage: '¡Por favor ingresa tu URL base!',
+      paddleocr: {
+        apiUrl: 'URL de la API de PaddleOCR',
+        apiUrlPlaceholder:
+          'Por ejemplo: https://paddleocr-server.com/layout-parsing',
+        accessToken: 'Token de acceso de AI Studio',
+        accessTokenPlaceholder: 'Su token de AI Studio (opcional)',
+        algorithm: 'Algoritmo de PaddleOCR',
+        selectAlgorithm: 'Seleccionar algoritmo',
+        modelNamePlaceholder: 'Por ejemplo: paddleocr-from-env-1',
+        modelNameRequired: 'El nombre del modelo es obligatorio',
+        apiUrlRequired: 'La URL de la API de PaddleOCR es obligatoria',
+      },
       vision: '¿Soporta visión?',
       ollamaLink: 'Cómo integrar {{name}}',
       FishAudioLink: 'Cómo usar FishAudio',
@@ -394,10 +429,6 @@ export default {
       'eu-central-1': 'Europa (Frankfurt)',
       'us-gov-west-1': 'AWS GovCloud (EE. UU. Oeste)',
       'ap-southeast-2': 'Asia Pacífico (Sídney)',
-      addHunyuanSID: 'ID Secreto de Hunyuan',
-      HunyuanSIDMessage: '¡Por favor ingresa tu ID Secreto!',
-      addHunyuanSK: 'Clave Secreta de Hunyuan',
-      HunyuanSKMessage: '¡Por favor ingresa tu Clave Secreta!',
       addTencentCloudSID: 'ID Secreto de TencentCloud',
       TencentCloudSIDMessage: '¡Por favor ingresa tu ID Secreto!',
       addTencentCloudSK: 'Clave Secreta de TencentCloud',
@@ -570,12 +601,31 @@ export default {
         'Este componente se usa para obtener resultados de búsqueda de www.baidu.com. Típicamente, actúa como un complemento a las bases de conocimiento. Top N especifica el número de resultados de búsqueda que necesitas ajustar.',
       duckDuckGo: 'DuckDuckGo',
       duckDuckGoDescription:
-        'Un componente que recupera resultados de búsqueda de duckduckgo.com, con TopN especificando el número de resultados de búsqueda. Complementa las bases de conocimiento existentes.',
-      channel: 'Canal',
-      channelTip:
-        'Realizar búsqueda de texto o búsqueda de noticias en la entrada del componente.',
-      text: 'Texto',
-      news: 'Noticias',
+        'Un componente que busca en duckduckgo.com, permitiéndote especificar el número de resultados de búsqueda usando TopN. Supplementa las bases de conocimiento existentes.',
+      searXNG: 'SearXNG',
+      searXNGDescription:
+        'Un componente que busca a través de la URL de la instancia SearXNG que proporcionas. Especifica TopN y la URL de la instancia.',
+      pdfGenerator: 'Generador de Documentos',
+      pDFGenerator: 'Generador de Documentos',
+      pdfGeneratorDescription: `Un componente que genera documentos (PDF, DOCX, TXT) desde contenido formateado en markdown con estilo personalizable, imágenes y tablas. Soporta: **negrita**, *cursiva*, # encabezados, - listas, tablas con sintaxis |.`,
+      pDFGeneratorDescription: `Un componente que genera documentos (PDF, DOCX, TXT) desde contenido formateado en markdown con estilo personalizable, imágenes y tablas. Soporta: **negrita**, *cursiva*, # encabezados, - listas, tablas con sintaxis |.`,
+      subtitle: 'Subtítulo',
+      logoImage: 'Imagen Logo',
+      logoPosition: 'Posición Logo',
+      logoWidth: 'Ancho Logo',
+      logoHeight: 'Alto Logo',
+      fontFamily: 'Familia Fuente',
+      fontSize: 'Tamaño Fuente',
+      titleFontSize: 'Tamaño Fuente Título',
+      pageSize: 'Tamaño Página',
+      orientation: 'Orientación',
+      marginTop: 'Margen Superior',
+      marginBottom: 'Margen Inferior',
+      filename: 'Nombre Archivo',
+      outputDirectory: 'Directorio Salida',
+      addPageNumbers: 'Agregar Números Página',
+      addTimestamp: 'Agregar Timestamp',
+      watermarkText: 'Texto Marca Agua',
       messageHistoryWindowSize:
         'Tamaño de la ventana del historial de mensajes',
       messageHistoryWindowSizeTip:
@@ -859,6 +909,19 @@ export default {
       noteDescription: 'Nota',
       notePlaceholder: 'Por favor ingresa una nota',
       runningHintText: 'está corriendo...🕞',
+
+      invoke: 'Solicitud HTTP',
+      invokeDescription:
+        'Un componente capaz de llamar a servicios remotos, utilizando las salidas de otros componentes o constantes como entradas.',
+      url: 'Url',
+      method: 'Método',
+      timeout: 'Tiempo de espera',
+      headers: 'Encabezados',
+      cleanHtml: 'Limpiar HTML',
+      cleanHtmlTip:
+        'Si la respuesta está formateada en HTML y solo se desea el contenido principal, actívelo.',
+      invalidUrl:
+        'Debe ser una URL válida o una URL con marcadores de posición de variables en el formato {nombre_variable} o {componente@variable}',
     },
     footer: {
       profile: 'Todos los derechos reservados @ React',

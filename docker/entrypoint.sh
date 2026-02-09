@@ -6,11 +6,14 @@ set -e
 # Usage and command-line argument parsing
 # -----------------------------------------------------------------------------
 function usage() {
-    echo "Usage: $0 [--disable-webserver] [--disable-taskexecutor] [--consumer-no-beg=<num>] [--consumer-no-end=<num>] [--workers=<num>] [--host-id=<string>]"
+    echo "Usage: $0 [--disable-webserver] [--disable-taskexecutor] [--disable-datasync] [--consumer-no-beg=<num>] [--consumer-no-end=<num>] [--workers=<num>] [--host-id=<string>]"
     echo
     echo "  --disable-webserver             Disables the web server (nginx + ragflow_server)."
     echo "  --disable-taskexecutor          Disables task executor workers."
+    echo "  --disable-datasync              Disables synchronization of datasource workers."
     echo "  --enable-mcpserver              Enables the MCP server."
+    echo "  --enable-adminserver            Enables the Admin server."
+    echo "  --init-superuser                Initializes the superuser."
     echo "  --consumer-no-beg=<num>         Start range for consumers (if using range-based)."
     echo "  --consumer-no-end=<num>         End range for consumers (if using range-based)."
     echo "  --workers=<num>                 Number of task executors to run (if range is not used)."
@@ -21,12 +24,17 @@ function usage() {
     echo "  $0 --disable-webserver --consumer-no-beg=0 --consumer-no-end=5"
     echo "  $0 --disable-webserver --workers=2 --host-id=myhost123"
     echo "  $0 --enable-mcpserver"
+    echo "  $0 --enable-adminserver"
+    echo "  $0 --init-superuser"
     exit 1
 }
 
 ENABLE_WEBSERVER=1 # Default to enable web server
 ENABLE_TASKEXECUTOR=1  # Default to enable task executor
+ENABLE_DATASYNC=1
 ENABLE_MCP_SERVER=0
+ENABLE_ADMIN_SERVER=0 # Default close admin server
+INIT_SUPERUSER_ARGS="" # Default to not initialize superuser
 CONSUMER_NO_BEG=0
 CONSUMER_NO_END=0
 WORKERS=1
@@ -66,8 +74,20 @@ for arg in "$@"; do
       ENABLE_TASKEXECUTOR=0
       shift
       ;;
+    --disable-datasync)
+      ENABLE_DATASYNC=0
+      shift
+      ;;
     --enable-mcpserver)
       ENABLE_MCP_SERVER=1
+      shift
+      ;;
+    --enable-adminserver)
+      ENABLE_ADMIN_SERVER=1
+      shift
+      ;;
+    --init-superuser)
+      INIT_SUPERUSER_ARGS="--init-superuser"
       shift
       ;;
     --mcp-host=*)
@@ -136,8 +156,20 @@ TEMPLATE_FILE="${CONF_DIR}/service_conf.yaml.template"
 CONF_FILE="${CONF_DIR}/service_conf.yaml"
 
 rm -f "${CONF_FILE}"
+DEF_ENV_VALUE_PATTERN="\$\{([^:]+):-([^}]+)\}"
 while IFS= read -r line || [[ -n "$line" ]]; do
-    eval "echo \"$line\"" >> "${CONF_FILE}"
+    if [[ "$line" =~ DEF_ENV_VALUE_PATTERN ]]; then
+        varname="${BASH_REMATCH[1]}"
+        default="${BASH_REMATCH[2]}"
+
+        if [ -n "${!varname}" ]; then
+            eval "echo \"$line"\" >> "${CONF_FILE}"
+        else
+            echo "$line" | sed -E "s/\\\$\{[^:]+:-([^}]+)\}/\1/g" >> "${CONF_FILE}"
+        fi
+    else
+        eval "echo \"$line\"" >> "${CONF_FILE}"
+    fi
 done < "${TEMPLATE_FILE}"
 
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/"
@@ -154,7 +186,9 @@ function task_exe() {
     JEMALLOC_PATH="$(pkg-config --variable=libdir jemalloc)/libjemalloc.so"
     while true; do
         LD_PRELOAD="$JEMALLOC_PATH" \
-        "$PY" rag/svr/task_executor.py "${host_id}_${consumer_id}"
+        "$PY" rag/svr/task_executor.py "${host_id}_${consumer_id}"  &
+        wait;
+        sleep 1;
     done
 }
 
@@ -171,9 +205,17 @@ function start_mcp_server() {
         "${MCP_JSON_RESPONSE_FLAG}" &
 }
 
+function ensure_docling() {
+    [[ "${USE_DOCLING}" == "true" ]] || { echo "[docling] disabled by USE_DOCLING"; return 0; }
+    DOCLING_PIN="${DOCLING_VERSION:-==2.71.0}"
+    "$PY" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('docling') else 1)" \
+      || uv pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://pypi.org/simple --no-cache-dir "docling${DOCLING_PIN}"
+}
+
 # -----------------------------------------------------------------------------
 # Start components based on flags
 # -----------------------------------------------------------------------------
+ensure_docling
 
 if [[ "${ENABLE_WEBSERVER}" -eq 1 ]]; then
     echo "Starting nginx..."
@@ -181,14 +223,34 @@ if [[ "${ENABLE_WEBSERVER}" -eq 1 ]]; then
 
     echo "Starting ragflow_server..."
     while true; do
-        "$PY" api/ragflow_server.py
+        "$PY" api/ragflow_server.py ${INIT_SUPERUSER_ARGS} &
+        wait;
+        sleep 1;
     done &
 fi
 
+if [[ "${ENABLE_DATASYNC}" -eq 1 ]]; then
+    echo "Starting data sync..."
+    while true; do
+        "$PY" rag/svr/sync_data_source.py &
+        wait;
+        sleep 1;
+    done &
+fi
+
+if [[ "${ENABLE_ADMIN_SERVER}" -eq 1 ]]; then
+    echo "Starting admin_server..."
+    while true; do
+        "$PY" admin/server/admin_server.py &
+        wait;
+        sleep 1;
+    done &
+fi
 
 if [[ "${ENABLE_MCP_SERVER}" -eq 1 ]]; then
     start_mcp_server
 fi
+
 
 if [[ "${ENABLE_TASKEXECUTOR}" -eq 1 ]]; then
     if [[ "${CONSUMER_NO_END}" -gt "${CONSUMER_NO_BEG}" ]]; then

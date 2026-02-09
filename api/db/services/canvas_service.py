@@ -18,17 +18,23 @@ import logging
 import time
 from uuid import uuid4
 from agent.canvas import Canvas
-from api.db import TenantPermission
+from api.db import CanvasCategory, TenantPermission
 from api.db.db_models import DB, CanvasTemplate, User, UserCanvas, API4Conversation
 from api.db.services.api_service import API4ConversationService
 from api.db.services.common_service import CommonService
-from api.utils import get_uuid
+from common.misc_utils import get_uuid
 from api.utils.api_utils import get_data_openai
 import tiktoken
 from peewee import fn
 
 
 class CanvasTemplateService(CommonService):
+    model = CanvasTemplate
+
+class DataFlowTemplateService(CommonService):
+    """
+    Alias of CanvasTemplateService
+    """
     model = CanvasTemplate
 
 
@@ -38,13 +44,14 @@ class UserCanvasService(CommonService):
     @classmethod
     @DB.connection_context()
     def get_list(cls, tenant_id,
-                 page_number, items_per_page, orderby, desc, id, title):
+                 page_number, items_per_page, orderby, desc, id, title, canvas_category=CanvasCategory.Agent):
         agents = cls.model.select()
         if id:
             agents = agents.where(cls.model.id == id)
         if title:
             agents = agents.where(cls.model.title == title)
         agents = agents.where(cls.model.user_id == tenant_id)
+        agents = agents.where(cls.model.canvas_category == canvas_category)
         if desc:
             agents = agents.order_by(cls.model.getter_by(orderby).desc())
         else:
@@ -56,7 +63,39 @@ class UserCanvasService(CommonService):
 
     @classmethod
     @DB.connection_context()
-    def get_by_tenant_id(cls, pid):
+    def get_all_agents_by_tenant_ids(cls, tenant_ids, user_id):
+        # will get all permitted agents, be cautious
+        fields = [
+            cls.model.id,
+            cls.model.avatar,
+            cls.model.title,
+            cls.model.permission,
+            cls.model.canvas_type,
+            cls.model.canvas_category
+        ]
+        # find team agents and owned agents
+        agents = cls.model.select(*fields).where(
+            (cls.model.user_id.in_(tenant_ids) & (cls.model.permission == TenantPermission.TEAM.value)) | (
+                cls.model.user_id == user_id
+            )
+        )
+        # sort by create_time, asc
+        agents.order_by(cls.model.create_time.asc())
+        # maybe cause slow query by deep paginate, optimize later
+        offset, limit = 0, 50
+        res = []
+        while True:
+            ag_batch = agents.offset(offset).limit(limit)
+            _temp = list(ag_batch.dicts())
+            if not _temp:
+                break
+            res.extend(_temp)
+            offset += limit
+        return res
+
+    @classmethod
+    @DB.connection_context()
+    def get_by_canvas_id(cls, pid):
         try:
 
             fields = [
@@ -71,6 +110,7 @@ class UserCanvasService(CommonService):
                 cls.model.create_time,
                 cls.model.create_date,
                 cls.model.update_date,
+                cls.model.canvas_category,
                 User.nickname,
                 User.avatar.alias('tenant_avatar'),
             ]
@@ -85,47 +125,61 @@ class UserCanvasService(CommonService):
 
     @classmethod
     @DB.connection_context()
+    def get_basic_info_by_canvas_ids(cls, canvas_id):
+        fields = [
+            cls.model.id,
+            cls.model.avatar,
+            cls.model.user_id,
+            cls.model.title,
+            cls.model.permission,
+            cls.model.canvas_category
+        ]
+        return cls.model.select(*fields).where(cls.model.id.in_(canvas_id)).dicts()
+
+    @classmethod
+    @DB.connection_context()
     def get_by_tenant_ids(cls, joined_tenant_ids, user_id,
                           page_number, items_per_page,
-                          orderby, desc, keywords,
+                          orderby, desc, keywords, canvas_category=None
                           ):
         fields = [
             cls.model.id,
             cls.model.avatar,
             cls.model.title,
-            cls.model.dsl,
             cls.model.description,
             cls.model.permission,
+            cls.model.user_id.alias("tenant_id"),
             User.nickname,
             User.avatar.alias('tenant_avatar'),
-            cls.model.update_time
+            cls.model.update_time,
+            cls.model.canvas_category,
         ]
         if keywords:
             agents = cls.model.select(*fields).join(User, on=(cls.model.user_id == User.id)).where(
-                ((cls.model.user_id.in_(joined_tenant_ids) & (cls.model.permission ==
-                                                                TenantPermission.TEAM.value)) | (
-                    cls.model.user_id == user_id)),
+                (((cls.model.user_id.in_(joined_tenant_ids)) & (cls.model.permission == TenantPermission.TEAM.value)) | (cls.model.user_id == user_id)),
                 (fn.LOWER(cls.model.title).contains(keywords.lower()))
             )
         else:
             agents = cls.model.select(*fields).join(User, on=(cls.model.user_id == User.id)).where(
-                ((cls.model.user_id.in_(joined_tenant_ids) & (cls.model.permission ==
-                                                                TenantPermission.TEAM.value)) | (
-                    cls.model.user_id == user_id))
+                (((cls.model.user_id.in_(joined_tenant_ids)) & (cls.model.permission == TenantPermission.TEAM.value)) | (cls.model.user_id == user_id))
             )
+        if canvas_category:
+            agents = agents.where(cls.model.canvas_category == canvas_category)
         if desc:
             agents = agents.order_by(cls.model.getter_by(orderby).desc())
         else:
             agents = agents.order_by(cls.model.getter_by(orderby).asc())
+
         count = agents.count()
-        agents = agents.paginate(page_number, items_per_page)
+        if page_number and items_per_page:
+            agents = agents.paginate(page_number, items_per_page)
         return list(agents.dicts()), count
 
     @classmethod
     @DB.connection_context()
     def accessible(cls, canvas_id, tenant_id):
         from api.db.services.user_service import UserTenantService
-        e, c = UserCanvasService.get_by_tenant_id(canvas_id)
+        e, c = UserCanvasService.get_by_canvas_id(canvas_id)
         if not e:
             return False
 
@@ -134,11 +188,13 @@ class UserCanvasService(CommonService):
             return False
         return True
 
-def completion(tenant_id, agent_id, session_id=None, **kwargs):
+
+async def completion(tenant_id, agent_id, session_id=None, **kwargs):
     query = kwargs.get("query", "") or kwargs.get("question", "")
     files = kwargs.get("files", [])
     inputs = kwargs.get("inputs", {})
     user_id = kwargs.get("user_id", "")
+    custom_header = kwargs.get("custom_header", "")
 
     if session_id:
         e, conv = API4ConversationService.get_by_id(session_id)
@@ -147,7 +203,7 @@ def completion(tenant_id, agent_id, session_id=None, **kwargs):
             conv.message = []
         if not isinstance(conv.dsl, str):
             conv.dsl = json.dumps(conv.dsl, ensure_ascii=False)
-        canvas = Canvas(conv.dsl, tenant_id, agent_id)
+        canvas = Canvas(conv.dsl, tenant_id, agent_id, custom_header=custom_header)
     else:
         e, cvs = UserCanvasService.get_by_id(agent_id)
         assert e, "Agent not found."
@@ -155,7 +211,7 @@ def completion(tenant_id, agent_id, session_id=None, **kwargs):
         if not isinstance(cvs.dsl, str):
             cvs.dsl = json.dumps(cvs.dsl, ensure_ascii=False)
         session_id=get_uuid()
-        canvas = Canvas(cvs.dsl, tenant_id, agent_id)
+        canvas = Canvas(cvs.dsl, tenant_id, agent_id, canvas_id=cvs.id, custom_header=custom_header)
         canvas.reset()
         conv = {
             "id": session_id,
@@ -163,7 +219,8 @@ def completion(tenant_id, agent_id, session_id=None, **kwargs):
             "user_id": user_id,
             "message": [],
             "source": "agent",
-            "dsl": cvs.dsl
+            "dsl": cvs.dsl,
+            "reference": []
         }
         API4ConversationService.save(**conv)
         conv = API4Conversation(**conv)
@@ -172,13 +229,18 @@ def completion(tenant_id, agent_id, session_id=None, **kwargs):
     conv.message.append({
         "role": "user",
         "content": query,
-        "id": message_id
+        "id": message_id,
+        "files": files
     })
     txt = ""
-    for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs):
+    async for ans in canvas.run(query=query, files=files, user_id=user_id, inputs=inputs):
         ans["session_id"] = session_id
         if ans["event"] == "message":
             txt += ans["data"]["content"]
+            if ans["data"].get("start_to_think", False):
+                txt += "<think>"
+            elif ans["data"].get("end_to_think", False):
+                txt += "</think>"
         yield "data:" + json.dumps(ans, ensure_ascii=False) + "\n\n"
 
     conv.message.append({"role": "assistant", "content": txt, "created_at": time.time(), "id": message_id})
@@ -189,15 +251,15 @@ def completion(tenant_id, agent_id, session_id=None, **kwargs):
     API4ConversationService.append_message(conv["id"], conv)
 
 
-def completionOpenAI(tenant_id, agent_id, question, session_id=None, stream=True, **kwargs):
-    tiktokenenc = tiktoken.get_encoding("cl100k_base")
-    prompt_tokens = len(tiktokenenc.encode(str(question)))
+async def completion_openai(tenant_id, agent_id, question, session_id=None, stream=True, **kwargs):
+    tiktoken_encoder = tiktoken.get_encoding("cl100k_base")
+    prompt_tokens = len(tiktoken_encoder.encode(str(question)))
     user_id = kwargs.get("user_id", "")
 
     if stream:
         completion_tokens = 0
         try:
-            for ans in completion(
+            async for ans in completion(
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 session_id=session_id,
@@ -209,30 +271,35 @@ def completionOpenAI(tenant_id, agent_id, question, session_id=None, stream=True
                     try:
                         ans = json.loads(ans[5:])  # remove "data:"
                     except Exception as e:
-                        logging.exception(f"Agent OpenAI-Compatible completionOpenAI parse answer failed: {e}")
+                        logging.exception(f"Agent OpenAI-Compatible completion_openai parse answer failed: {e}")
                         continue
-
-                if ans.get("event") != "message":
+                if ans.get("event") not in ["message", "message_end"]:
                     continue
 
-                content_piece = ans["data"]["content"]
-                completion_tokens += len(tiktokenenc.encode(content_piece))
+                content_piece = ""
+                if ans["event"] == "message":
+                    content_piece = ans["data"]["content"]
 
-                yield "data: " + json.dumps(
-                    get_data_openai(
+                completion_tokens += len(tiktoken_encoder.encode(content_piece))
+
+                openai_data = get_data_openai(
                         id=session_id or str(uuid4()),
                         model=agent_id,
                         content=content_piece,
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         stream=True
-                    ),
-                    ensure_ascii=False
-                ) + "\n\n"
+                    )
+
+                if ans.get("data", {}).get("reference", None):
+                    openai_data["choices"][0]["delta"]["reference"] = ans["data"]["reference"]
+
+                yield "data: " + json.dumps(openai_data, ensure_ascii=False) + "\n\n"
 
             yield "data: [DONE]\n\n"
 
         except Exception as e:
+            logging.exception(e)
             yield "data: " + json.dumps(
                 get_data_openai(
                     id=session_id or str(uuid4()),
@@ -240,7 +307,7 @@ def completionOpenAI(tenant_id, agent_id, question, session_id=None, stream=True
                     content=f"**ERROR**: {str(e)}",
                     finish_reason="stop",
                     prompt_tokens=prompt_tokens,
-                    completion_tokens=len(tiktokenenc.encode(f"**ERROR**: {str(e)}")),
+                    completion_tokens=len(tiktoken_encoder.encode(f"**ERROR**: {str(e)}")),
                     stream=True
                 ),
                 ensure_ascii=False
@@ -250,7 +317,8 @@ def completionOpenAI(tenant_id, agent_id, question, session_id=None, stream=True
     else:
         try:
             all_content = ""
-            for ans in completion(
+            reference = {}
+            async for ans in completion(
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 session_id=session_id,
@@ -260,13 +328,18 @@ def completionOpenAI(tenant_id, agent_id, question, session_id=None, stream=True
             ):
                 if isinstance(ans, str):
                     ans = json.loads(ans[5:])
-                if ans.get("event") != "message":
+                if ans.get("event") not in ["message", "message_end"]:
                     continue
-                all_content += ans["data"]["content"]
 
-            completion_tokens = len(tiktokenenc.encode(all_content))
+                if ans["event"] == "message":
+                    all_content += ans["data"]["content"]
 
-            yield get_data_openai(
+                if ans.get("data", {}).get("reference", None):
+                    reference.update(ans["data"]["reference"])
+
+            completion_tokens = len(tiktoken_encoder.encode(all_content))
+
+            openai_data = get_data_openai(
                 id=session_id or str(uuid4()),
                 model=agent_id,
                 prompt_tokens=prompt_tokens,
@@ -276,12 +349,17 @@ def completionOpenAI(tenant_id, agent_id, question, session_id=None, stream=True
                 param=None
             )
 
+            if reference:
+                openai_data["choices"][0]["message"]["reference"] = reference
+
+            yield openai_data
         except Exception as e:
+            logging.exception(e)
             yield get_data_openai(
                 id=session_id or str(uuid4()),
                 model=agent_id,
                 prompt_tokens=prompt_tokens,
-                completion_tokens=len(tiktokenenc.encode(f"**ERROR**: {str(e)}")),
+                completion_tokens=len(tiktoken_encoder.encode(f"**ERROR**: {str(e)}")),
                 content=f"**ERROR**: {str(e)}",
                 finish_reason="stop",
                 param=None

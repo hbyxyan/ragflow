@@ -1,6 +1,10 @@
+import { EmptyType } from '@/components/empty/constant';
+import Empty from '@/components/empty/empty';
+import HighLightMarkdown from '@/components/highlight-markdown';
 import { FileIcon } from '@/components/icon-font';
 import { ImageWithPopover } from '@/components/image';
 import { Input } from '@/components/originui/input';
+import { SkeletonCard } from '@/components/skeleton-card';
 import { Button } from '@/components/ui/button';
 import {
   Popover,
@@ -8,7 +12,6 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { RAGFlowPagination } from '@/components/ui/ragflow-pagination';
-import { Skeleton } from '@/components/ui/skeleton';
 import { IReference } from '@/interfaces/database/chat';
 import { cn } from '@/lib/utils';
 import DOMPurify from 'dompurify';
@@ -18,7 +21,6 @@ import { Dispatch, SetStateAction, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ISearchAppDetailProps } from '../next-searches/hooks';
 import PdfDrawer from './document-preview-modal';
-import HightLightMarkdown from './highlight-markdown';
 import { ISearchReturnProps } from './hooks';
 import './index.less';
 import MarkdownContent from './markdown-content';
@@ -65,6 +67,7 @@ export default function SearchingView({
   //   changeLanguage();
   // }, [i18n]);
   const [searchtext, setSearchtext] = useState<string>('');
+  const [retrievalLoading, setRetrievalLoading] = useState(false);
 
   useEffect(() => {
     setSearchtext(searchStr);
@@ -83,7 +86,7 @@ export default function SearchingView({
       >
         <h1
           className={cn(
-            'text-4xl font-bold bg-gradient-to-r from-sky-600 from-30% via-sky-500 via-60% to-emerald-500 bg-clip-text cursor-pointer',
+            'text-4xl font-bold bg-gradient-to-l from-[#40EBE3] to-[#4A51FF] bg-clip-text cursor-pointer',
           )}
           onClick={() => {
             setIsSearching?.(false);
@@ -91,7 +94,6 @@ export default function SearchingView({
         >
           RAGFlow
         </h1>
-
         <div
           className={cn(
             ' rounded-lg text-primary text-xl sticky flex flex-col justify-center w-2/3 max-w-[780px] transform scale-100 ml-16 ',
@@ -117,14 +119,14 @@ export default function SearchingView({
               />
               <div className="absolute right-2 top-1/2 -translate-y-1/2 transform flex items-center gap-1">
                 <X
-                  className="text-text-secondary cursor-pointer"
+                  className="text-text-secondary cursor-pointer opacity-80"
                   size={14}
                   onClick={() => {
                     setSearchtext('');
                     handleClickRelatedQuestion('');
                   }}
                 />
-                <span className="text-text-secondary ml-4">|</span>
+                <span className="text-text-secondary opacity-20 ml-4">|</span>
                 <button
                   type="button"
                   className="rounded-full bg-text-primary p-1 text-bg-base shadow w-12 h-8 ml-4"
@@ -157,11 +159,7 @@ export default function SearchingView({
                   {t('search.AISummary')}
                 </div>
                 {isEmpty(answer) && sendingLoading ? (
-                  <div className="space-y-2 mt-2">
-                    <Skeleton className="h-4 w-full bg-bg-card" />
-                    <Skeleton className="h-4 w-full bg-bg-card" />
-                    <Skeleton className="h-4 w-2/3 bg-bg-card" />
-                  </div>
+                  <SkeletonCard className=" mt-2" />
                 ) : (
                   answer.answer && (
                     <div className="border rounded-lg p-4 mt-3 max-h-52 overflow-auto scrollbar-none">
@@ -174,20 +172,25 @@ export default function SearchingView({
                     </div>
                   )
                 )}
-                <div className="w-full border-b border-border-default/80 my-6"></div>
+                {answer.answer && !sendingLoading && (
+                  <div className="w-full border-b border-border-default/80 my-6"></div>
+                )}
               </>
             )}
             {/* retrieval documents */}
-            {!isSearchStrEmpty && (
+            {!isSearchStrEmpty && !sendingLoading && (
               <>
                 <div className=" mt-3 w-44 ">
                   <RetrievalDocuments
                     selectedDocumentIds={selectedDocumentIds}
                     setSelectedDocumentIds={setSelectedDocumentIds}
                     onTesting={handleTestChunk}
+                    setLoading={(loading: boolean) => {
+                      setRetrievalLoading(loading);
+                    }}
                   ></RetrievalDocuments>
                 </div>
-                <div className="w-full border-b border-border-default/80 my-6"></div>
+                {/* <div className="w-full border-b border-border-default/80 my-6"></div> */}
               </>
             )}
             <div className="mt-3 ">
@@ -195,35 +198,38 @@ export default function SearchingView({
                 <>
                   {chunks.map((chunk, index) => {
                     return (
-                      <>
-                        <div
-                          key={chunk.chunk_id}
-                          className="w-full flex flex-col"
-                        >
-                          <div className="w-full">
+                      <div key={index}>
+                        <div className="w-full flex flex-col">
+                          <div className="w-full highlightContent">
                             <ImageWithPopover
-                              id={chunk.img_id}
+                              id={chunk.image_id || chunk.img_id}
                             ></ImageWithPopover>
                             <Popover>
                               <PopoverTrigger asChild>
                                 <div
                                   dangerouslySetInnerHTML={{
                                     __html: DOMPurify.sanitize(
-                                      `${chunk.highlight}...`,
+                                      `${
+                                        chunk.highlight ??
+                                        chunk.content_with_weight ??
+                                        ''
+                                      }...`,
                                     ),
                                   }}
                                   className="text-sm text-text-primary mb-1"
                                 ></div>
                               </PopoverTrigger>
-                              <PopoverContent className="text-text-primary">
-                                <HightLightMarkdown>
-                                  {chunk.content_with_weight}
-                                </HightLightMarkdown>
+                              <PopoverContent className="text-text-primary !w-full max-w-lg ">
+                                <div className="max-h-96 overflow-auto scrollbar-thin">
+                                  <HighLightMarkdown>
+                                    {chunk.content_with_weight}
+                                  </HighLightMarkdown>
+                                </div>
                               </PopoverContent>
                             </Popover>
                           </div>
                           <div
-                            className="flex gap-2 items-center text-xs text-text-secondary border p-1 rounded-lg w-fit"
+                            className="flex gap-2 items-center text-xs text-text-secondary border p-1 rounded-lg w-fit mt-3"
                             onClick={() =>
                               clickDocumentButton(chunk.doc_id, chunk as any)
                             }
@@ -235,39 +241,54 @@ export default function SearchingView({
                         {index < chunks.length - 1 && (
                           <div className="w-full border-b border-border-default/80 mt-6"></div>
                         )}
-                      </>
+                      </div>
                     );
                   })}
                 </>
               )}
               {relatedQuestions?.length > 0 &&
                 searchData.search_config.related_search && (
-                  <div className="mt-14 w-full overflow-hidden opacity-100 max-h-96">
-                    <p className="text-text-primary mb-2 text-xl">
-                      {t('relatedSearch')}
-                    </p>
-                    <div className="mt-2 flex flex-wrap justify-start gap-2">
-                      {relatedQuestions?.map((x, idx) => (
-                        <Button
-                          key={idx}
-                          variant="transparent"
-                          className="bg-bg-card text-text-secondary"
-                          onClick={handleClickRelatedQuestion(
-                            x,
-                            searchData.search_config.summary,
-                          )}
-                        >
-                          {x}
-                        </Button>
-                      ))}
+                  <>
+                    <div className="w-full border-b border-border-default/80 mt-6"></div>
+
+                    <div className="mt-6 w-full overflow-hidden opacity-100 max-h-96">
+                      <p className="text-text-primary mb-2 text-xl">
+                        {t('search.relatedSearch')}
+                      </p>
+                      <div className="mt-2 flex flex-wrap justify-start gap-2">
+                        {relatedQuestions?.map((x, idx) => (
+                          <Button
+                            key={idx}
+                            variant="transparent"
+                            className="bg-bg-card text-text-secondary"
+                            onClick={handleClickRelatedQuestion(
+                              x,
+                              searchData.search_config.summary,
+                            )}
+                          >
+                            {x}
+                          </Button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  </>
                 )}
             </div>
+            {!isSearchStrEmpty &&
+              !retrievalLoading &&
+              !answer.answer &&
+              !sendingLoading &&
+              total <= 0 &&
+              chunks?.length <= 0 &&
+              relatedQuestions?.length <= 0 && (
+                <div className="h-2/5 flex items-center justify-center">
+                  <Empty type={EmptyType.SearchData} iconWidth={80} />
+                </div>
+              )}
           </div>
 
           {total > 0 && (
-            <div className="mt-8 px-8 pb-8">
+            <div className="mt-8 px-8 pb-8 text-base">
               <RAGFlowPagination
                 current={pagination.current}
                 pageSize={pagination.pageSize}
@@ -277,7 +298,6 @@ export default function SearchingView({
             </div>
           )}
         </div>
-
         {mindMapVisible && (
           <div className="flex-1 h-[88dvh] z-30 ml-32 mt-5">
             <MindMapDrawer

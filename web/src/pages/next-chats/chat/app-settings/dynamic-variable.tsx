@@ -22,6 +22,7 @@ export function DynamicVariableForm() {
   const { fields, remove, append } = useFieldArray({
     name,
     control: form.control,
+    shouldUnregister: false,
   });
 
   const add = useCallback(() => {
@@ -40,6 +41,11 @@ export function DynamicVariableForm() {
         <Button variant={'ghost'} type="button" onClick={add}>
           <Plus />
         </Button>
+      </div>
+      <div className="flex gap-2 pr-12 text-text-secondary text-xs">
+        <span className="flex-1">{t('chat.key')}</span>
+        <span className="w-3"></span>
+        <span className="flex-1">{t('chat.optional')}</span>
       </div>
       <div className="space-y-5">
         {fields.map((field, index) => {

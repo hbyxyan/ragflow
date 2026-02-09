@@ -1,25 +1,29 @@
 import { MessageType } from '@/constants/chat';
-import { useGetFileIcon } from '@/pages/chat/hooks';
 
 import { useSendAgentMessage } from './use-send-agent-message';
 
 import { FileUploadProps } from '@/components/file-upload';
 import { NextMessageInput } from '@/components/message-input/next';
+import MarkdownContent from '@/components/next-markdown-content';
 import MessageItem from '@/components/next-message-item';
-import PdfDrawer from '@/components/pdf-drawer';
+import PdfSheet from '@/components/pdf-drawer';
 import { useClickDrawer } from '@/components/pdf-drawer/hooks';
 import {
   useFetchAgent,
   useUploadCanvasFileWithProgress,
 } from '@/hooks/use-agent-request';
-import { useFetchUserInfo } from '@/hooks/user-setting-hooks';
+import { useFetchUserInfo } from '@/hooks/use-user-setting-request';
 import { buildMessageUuidWithRole } from '@/utils/chat';
-import { memo, useCallback } from 'react';
-import { useParams } from 'umi';
+import { memo, useCallback, useContext } from 'react';
+import { useParams } from 'react-router';
+import { AgentChatContext } from '../context';
 import DebugContent from '../debug-content';
 import { useAwaitCompentData } from '../hooks/use-chat-logic';
+import { useIsTaskMode } from '../hooks/use-get-begin-query';
+import { useGetFileIcon } from './use-get-file-icon';
 
 function AgentChatBox() {
+  const { data: canvasInfo, refetch } = useFetchAgent();
   const {
     value,
     scrollRef,
@@ -32,13 +36,13 @@ function AgentChatBox() {
     sendFormMessage,
     findReferenceByMessageId,
     appendUploadResponseList,
-  } = useSendAgentMessage();
+    removeFile,
+  } = useSendAgentMessage({ refetch });
 
   const { visible, hideModal, documentId, selectedChunk, clickDocumentButton } =
     useClickDrawer();
   useGetFileIcon();
   const { data: userInfo } = useFetchUserInfo();
-  const { data: canvasInfo } = useFetchAgent();
   const { id: canvasId } = useParams();
   const { uploadCanvasFile, loading } = useUploadCanvasFileWithProgress();
 
@@ -47,6 +51,11 @@ function AgentChatBox() {
     sendFormMessage,
     canvasId: canvasId as string,
   });
+
+  const { setDerivedMessages } = useContext(AgentChatContext);
+  setDerivedMessages?.(derivedMessages);
+
+  const isTaskMode = useIsTaskMode();
 
   const handleUploadFile: NonNullable<FileUploadProps['onUpload']> =
     useCallback(
@@ -59,7 +68,7 @@ function AgentChatBox() {
 
   return (
     <>
-      <section className="flex flex-1 flex-col px-5 h-[90vh]">
+      <section className="flex flex-1 flex-col px-5 min-h-0 pb-4">
         <div className="flex-1 overflow-auto" ref={messageContainerRef}>
           <div>
             {/* <Spin spinning={sendLoading}> */}
@@ -95,8 +104,10 @@ function AgentChatBox() {
                   {message.role === MessageType.Assistant &&
                     derivedMessages.length - 1 !== i && (
                       <div>
-                        <div>{message?.data?.tips}</div>
-
+                        <MarkdownContent
+                          content={message?.data?.tips}
+                          loading={false}
+                        ></MarkdownContent>
                         <div>
                           {buildInputList(message)?.map((item) => item.value)}
                         </div>
@@ -109,25 +120,31 @@ function AgentChatBox() {
           </div>
           <div ref={scrollRef} />
         </div>
-        <NextMessageInput
-          value={value}
-          sendLoading={sendLoading}
-          disabled={isWaitting}
-          sendDisabled={sendLoading || isWaitting}
-          isUploading={loading || isWaitting}
-          onPressEnter={handlePressEnter}
-          onInputChange={handleInputChange}
-          stopOutputMessage={stopOutputMessage}
-          onUpload={handleUploadFile}
-          conversationId=""
-        />
+        {isTaskMode || (
+          <NextMessageInput
+            value={value}
+            sendLoading={sendLoading}
+            disabled={isWaitting}
+            sendDisabled={sendLoading || isWaitting}
+            isUploading={loading || isWaitting}
+            resize="vertical"
+            onPressEnter={handlePressEnter}
+            onInputChange={handleInputChange}
+            stopOutputMessage={stopOutputMessage}
+            onUpload={handleUploadFile}
+            removeFile={removeFile}
+            conversationId=""
+          />
+        )}
       </section>
-      <PdfDrawer
-        visible={visible}
-        hideModal={hideModal}
-        documentId={documentId}
-        chunk={selectedChunk}
-      ></PdfDrawer>
+      {visible && (
+        <PdfSheet
+          visible={visible}
+          hideModal={hideModal}
+          documentId={documentId}
+          chunk={selectedChunk}
+        ></PdfSheet>
+      )}
     </>
   );
 }

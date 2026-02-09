@@ -1,5 +1,5 @@
-import { Outlet } from 'umi';
-import SideBar from './sidebar';
+import { Outlet } from 'react-router';
+import { SideBar } from './sidebar';
 
 import { PageHeader } from '@/components/page-header';
 import {
@@ -14,7 +14,7 @@ import { useNavigatePage } from '@/hooks/logic-hooks/navigate-hooks';
 import { cn } from '@/lib/utils';
 import { House } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import styles from './index.less';
+import styles from './index.module.less';
 
 const UserSetting = () => {
   const { t } = useTranslation();
@@ -38,10 +38,13 @@ const UserSetting = () => {
         </Breadcrumb>
       </PageHeader>
       <div
-        className={cn(styles.settingWrapper, 'overflow-auto flex flex-1 pt-4')}
+        className={cn(
+          styles.settingWrapper,
+          'overflow-auto flex flex-1 pt-4 pr-4 pb-4',
+        )}
       >
         <SideBar></SideBar>
-        <div className={cn(styles.outletWrapper, 'flex flex-1 px-8')}>
+        <div className={cn(styles.outletWrapper, 'flex flex-1 rounded-lg')}>
           <Outlet></Outlet>
         </div>
       </div>

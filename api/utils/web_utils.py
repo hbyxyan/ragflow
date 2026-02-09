@@ -20,10 +20,12 @@ import json
 import re
 import socket
 from urllib.parse import urlparse
-
-from api.apps import smtp_mail_server
-from flask_mail import Message
-from flask import render_template_string
+import aiosmtplib
+from email.mime.text import MIMEText
+from email.header import Header
+from common import settings
+from quart import render_template_string
+from api.utils.email_templates import EMAIL_TEMPLATES
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.options import Options
@@ -33,6 +35,12 @@ from selenium.webdriver.support.expected_conditions import staleness_of
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
+
+OTP_LENGTH = 4
+OTP_TTL_SECONDS = 5 * 60 # valid for 5 minutes
+ATTEMPT_LIMIT = 5 # maximum attempts
+ATTEMPT_LOCK_SECONDS = 30 * 60 # lock for 30 minutes
+RESEND_COOLDOWN_SECONDS = 60 # cooldown for 1 minute
 
 
 CONTENT_TYPE_MAP = {
@@ -61,6 +69,7 @@ CONTENT_TYPE_MAP = {
     # Web
     "md": "text/markdown",
     "markdown": "text/markdown",
+    "mdx": "text/markdown",
     "htm": "text/html",
     "html": "text/html",
     "json": "application/json",
@@ -77,6 +86,9 @@ CONTENT_TYPE_MAP = {
     "ico": "image/x-icon",
     "avif": "image/avif",
     "heic": "image/heic",
+    # PPTX
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
 
@@ -176,26 +188,58 @@ def get_float(req: dict, key: str, default: float | int = 10.0) -> float:
         return parsed if parsed > 0 else default
     except (TypeError, ValueError):
         return default
+    
+
+async def send_email_html(to_email: str, subject: str, template_key: str, **context):
+
+    body = await render_template_string(EMAIL_TEMPLATES.get(template_key), **context)
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["From"] = f"{settings.MAIL_DEFAULT_SENDER[0]} <{settings.MAIL_DEFAULT_SENDER[1]}>"
+    msg["To"] = to_email
+
+    smtp = aiosmtplib.SMTP(
+        hostname=settings.MAIL_SERVER,
+        port=settings.MAIL_PORT,
+        use_tls=True,
+        timeout=10,
+    )
+
+    await smtp.connect()
+    await smtp.login(settings.MAIL_USERNAME, settings.MAIL_PASSWORD)
+    await smtp.send_message(msg)
+    await smtp.quit()
 
 
-INVITE_EMAIL_TMPL = """
-<p>Hi {{email}},</p>
-<p>{{inviter}} has invited you to join their team (ID: {{tenant_id}}).</p>
-<p>Click the link below to complete your registration:<br>
-<a href="{{invite_url}}">{{invite_url}}</a></p>
-<p>If you did not request this, please ignore this email.</p>
-"""
+async def send_invite_email(to_email, invite_url, tenant_id, inviter):
+    # Reuse the generic HTML sender with 'invite' template
+    await send_email_html(
+        to_email=to_email,
+        subject="RAGFlow Invitation",
+        template_key="invite",
+        email=to_email,
+        invite_url=invite_url,
+        tenant_id=tenant_id,
+        inviter=inviter,
+    )
 
-def send_invite_email(to_email, invite_url, tenant_id, inviter):
-    from api.apps import  app
-    with app.app_context():
-        msg = Message(subject="RAGFlow Invitation",
-                      recipients=[to_email])
-        msg.html = render_template_string(
-            INVITE_EMAIL_TMPL,
-            email=to_email,
-            invite_url=invite_url,
-            tenant_id=tenant_id,
-            inviter=inviter,
-        )
-        smtp_mail_server.send(msg)
+
+def otp_keys(email: str):
+    email = (email or "").strip().lower()
+    return (
+        f"otp:{email}",
+        f"otp_attempts:{email}",
+        f"otp_last_sent:{email}",
+        f"otp_lock:{email}",
+    )
+
+
+def hash_code(code: str, salt: bytes) -> str:
+    import hashlib
+    import hmac 
+    return hmac.new(salt, (code or "").encode("utf-8"), hashlib.sha256).hexdigest()
+    
+
+def captcha_key(email: str) -> str:
+    return f"captcha:{email}"
+    

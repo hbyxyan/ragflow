@@ -9,7 +9,6 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 import { Switch } from '@/components/ui/switch';
-import { Textarea } from '@/components/ui/textarea';
 import { FormTooltip } from '@/components/ui/tooltip';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus } from 'lucide-react';
@@ -22,6 +21,7 @@ import { ParameterDialog } from '../begin-form/parameter-dialog';
 import { QueryTable } from '../begin-form/query-table';
 import { useEditQueryRecord } from '../begin-form/use-edit-query';
 import { Output } from '../components/output';
+import { PromptEditor } from '../components/prompt-editor';
 import { useValues } from './use-values';
 import { useWatchFormChange } from './use-watch-change';
 
@@ -86,7 +86,7 @@ function UserFillUpForm({ node }: INextOperatorForm) {
           render={({ field }) => (
             <FormItem>
               <FormLabel tooltip={t('flow.openingSwitchTip')}>
-                Guiding Question
+                {t('flow.guidingQuestion')}
               </FormLabel>
               <FormControl>
                 <Switch
@@ -104,13 +104,11 @@ function UserFillUpForm({ node }: INextOperatorForm) {
           name={'tips'}
           render={({ field }) => (
             <FormItem>
-              <FormLabel tooltip={t('chat.setAnOpenerTip')}>Message</FormLabel>
+              <FormLabel tooltip={t('chat.setAnOpenerTip')}>
+                {t('flow.msg')}
+              </FormLabel>
               <FormControl>
-                <Textarea
-                  rows={5}
-                  {...field}
-                  placeholder={t('common.pleaseInput')}
-                ></Textarea>
+                <PromptEditor value={field.value} onChange={field.onChange} />
               </FormControl>
               <FormMessage />
             </FormItem>

@@ -14,7 +14,7 @@ import { useNavigatePage } from '@/hooks/logic-hooks/navigate-hooks';
 import {
   useFetchTenantInfo,
   useFetchUserInfo,
-} from '@/hooks/user-setting-hooks';
+} from '@/hooks/use-user-setting-request';
 import { Send, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -62,7 +62,7 @@ export default function SearchPage() {
           <BreadcrumbList>
             <BreadcrumbItem>
               <BreadcrumbLink onClick={navigateToSearchList}>
-                Search
+                {t('header.search')}
               </BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
@@ -82,6 +82,7 @@ export default function SearchPage() {
                 searchText={searchText}
                 setSearchText={setSearchText}
                 userInfo={userInfo}
+                canSearch={!checkOpenSetting}
               />
             </div>
           )}
@@ -128,7 +129,7 @@ export default function SearchPage() {
       </div>
       <div className="absolute right-5 top-4 ">
         <Button
-          className="bg-text-primary  text-bg-base border-b-[#00BEB4] border-b-2"
+          className="bg-text-primary  text-bg-base border-b-accent-primary border-b-2"
           onClick={() => {
             handleOperate().then((res) => {
               console.log(res, 'res');

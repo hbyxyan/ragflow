@@ -1,4 +1,4 @@
-import HightLightMarkdown from '@/components/highlight-markdown';
+import HighLightMarkdown from '@/components/highlight-markdown';
 import {
   Timeline,
   TimelineContent,
@@ -22,10 +22,10 @@ import {
 import { ITraceData } from '@/interfaces/database/agent';
 import { cn } from '@/lib/utils';
 import { t } from 'i18next';
-import { get, isEmpty, isEqual, uniqWith } from 'lodash';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import JsonView from 'react18-json-view';
+import { get, isEmpty } from 'lodash';
+import { useCallback, useEffect, useMemo } from 'react';
 import { Operator } from '../constant';
+import { JsonViewer } from '../form/components/json-viewer';
 import { useCacheChatLog } from '../hooks/use-cache-chat-log';
 import OperatorIcon from '../operator-icon';
 import ToolTimelineItem from './tool-timeline-item';
@@ -37,25 +37,7 @@ type LogFlowTimelineProps = Pick<
   sendLoading: boolean;
   isShare?: boolean;
 };
-export function JsonViewer({
-  data,
-  title,
-}: {
-  data: Record<string, any>;
-  title: string;
-}) {
-  return (
-    <section className="space-y-2">
-      <div>{title}</div>
-      <JsonView
-        src={data}
-        displaySize
-        collapseStringsAfterLength={100000000000}
-        className="w-full h-[200px] break-words overflow-auto scrollbar-auto p-2 bg-muted"
-      />
-    </section>
-  );
-}
+
 export const typeMap = {
   begin: t('flow.logTimeline.begin'),
   agent: t('flow.logTimeline.agent'),
@@ -106,7 +88,7 @@ function getInputsOrOutputs(
     return inputsOrOutputs[0] || {};
   }
 
-  return uniqWith(inputsOrOutputs, isEqual); // TODO: Violence should not be used to
+  return inputsOrOutputs;
 }
 export const WorkFlowTimeline = ({
   currentEventListWithoutMessage,
@@ -116,12 +98,12 @@ export const WorkFlowTimeline = ({
   isShare,
 }: LogFlowTimelineProps) => {
   // const getNode = useGraphStore((state) => state.getNode);
-  const [isStopFetchTrace, setISStopFetchTrace] = useState(false);
 
-  const { data: traceData, setMessageId } = useFetchMessageTrace(
-    isStopFetchTrace,
-    canvasId,
-  );
+  const {
+    data: traceData,
+    setMessageId,
+    setISStopFetchTrace,
+  } = useFetchMessageTrace(canvasId);
 
   useEffect(() => {
     setMessageId(currentMessageId);
@@ -133,7 +115,7 @@ export const WorkFlowTimeline = ({
 
   useEffect(() => {
     setISStopFetchTrace(!sendLoading);
-  }, [sendLoading]);
+  }, [sendLoading, setISStopFetchTrace]);
 
   const startedNodeList = useMemo(() => {
     const finish = currentEventListWithoutMessage?.some(
@@ -151,7 +133,7 @@ export const WorkFlowTimeline = ({
       }
       return pre;
     }, []);
-  }, [currentEventListWithoutMessage, sendLoading]);
+  }, [currentEventListWithoutMessage, sendLoading, setISStopFetchTrace]);
 
   const getElapsedTime = (nodeId: string) => {
     if (nodeId === 'begin') {
@@ -327,9 +309,9 @@ export const WorkFlowTimeline = ({
                         <AccordionContent>
                           <div className="space-y-2">
                             <div className="w-full h-[200px] break-words overflow-auto scrollbar-auto p-2 bg-muted">
-                              <HightLightMarkdown>
+                              <HighLightMarkdown>
                                 {x.data.thoughts || ''}
-                              </HightLightMarkdown>
+                              </HighLightMarkdown>
                             </div>
                           </div>
                         </AccordionContent>

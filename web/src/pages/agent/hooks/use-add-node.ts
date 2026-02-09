@@ -1,6 +1,7 @@
 import { useFetchModelId } from '@/hooks/logic-hooks';
 import { Connection, Node, Position, ReactFlowInstance } from '@xyflow/react';
 import humanId from 'human-id';
+import { t } from 'i18next';
 import { lowerFirst } from 'lodash';
 import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -9,41 +10,43 @@ import {
   NodeMap,
   Operator,
   initialAgentValues,
-  initialAkShareValues,
   initialArXivValues,
-  initialBaiduFanyiValues,
-  initialBaiduValues,
   initialBeginValues,
   initialBingValues,
   initialCategorizeValues,
   initialCodeValues,
-  initialConcentratorValues,
   initialCrawlerValues,
-  initialDeepLValues,
+  initialDataOperationsValues,
   initialDuckValues,
   initialEmailValues,
   initialExeSqlValues,
+  initialExtractorValues,
   initialGithubValues,
   initialGoogleScholarValues,
   initialGoogleValues,
+  initialHierarchicalMergerValues,
   initialInvokeValues,
   initialIterationStartValues,
   initialIterationValues,
-  initialJin10Values,
-  initialKeywordExtractValues,
+  initialListOperationsValues,
+  initialLoopValues,
   initialMessageValues,
   initialNoteValues,
+  initialPDFGeneratorValues,
+  initialParserValues,
   initialPubMedValues,
-  initialQWeatherValues,
-  initialRelevantValues,
   initialRetrievalValues,
   initialRewriteQuestionValues,
+  initialSearXNGValues,
+  initialSplitterValues,
   initialStringTransformValues,
   initialSwitchValues,
   initialTavilyExtractValues,
   initialTavilyValues,
-  initialTuShareValues,
+  initialTokenizerValues,
   initialUserFillUpValues,
+  initialVariableAggregatorValues,
+  initialVariableAssignerValues,
   initialWaitingDialogueValues,
   initialWenCaiValues,
   initialWikipediaValues,
@@ -61,6 +64,63 @@ function isBottomSubAgent(type: string, position: Position) {
     type === Operator.Tool
   );
 }
+
+const GroupStartNodeMap = {
+  [Operator.Iteration]: {
+    id: `${Operator.IterationStart}:${humanId()}`,
+    type: 'iterationStartNode',
+    position: { x: 50, y: 100 },
+    data: {
+      label: Operator.IterationStart,
+      name: Operator.IterationStart,
+      form: initialIterationStartValues,
+    },
+    extent: 'parent' as 'parent',
+  },
+  [Operator.Loop]: {
+    id: `${Operator.LoopStart}:${humanId()}`,
+    type: 'loopStartNode',
+    position: { x: 50, y: 100 },
+    data: {
+      label: Operator.LoopStart,
+      name: Operator.LoopStart,
+      form: {},
+    },
+    extent: 'parent' as 'parent',
+  },
+};
+
+function useAddGroupNode() {
+  const { addEdge, addNode } = useGraphStore((state) => state);
+
+  const addGroupNode = useCallback(
+    (operatorType: string, newNode: Node<any>, nodeId?: string) => {
+      newNode.width = 500;
+      newNode.height = 250;
+
+      const startNode: Node<any> =
+        GroupStartNodeMap[operatorType as keyof typeof GroupStartNodeMap];
+
+      startNode.parentId = newNode.id;
+
+      addNode(newNode);
+      addNode(startNode);
+
+      if (nodeId) {
+        addEdge({
+          source: nodeId,
+          target: newNode.id,
+          sourceHandle: NodeHandleId.Start,
+          targetHandle: NodeHandleId.End,
+        });
+      }
+      return newNode.id;
+    },
+    [addEdge, addNode],
+  );
+
+  return { addGroupNode };
+}
 export const useInitializeOperatorParams = () => {
   const llmId = useFetchModelId();
 
@@ -69,36 +129,24 @@ export const useInitializeOperatorParams = () => {
       [Operator.Begin]: initialBeginValues,
       [Operator.Retrieval]: initialRetrievalValues,
       [Operator.Categorize]: { ...initialCategorizeValues, llm_id: llmId },
-      [Operator.Relevant]: { ...initialRelevantValues, llm_id: llmId },
       [Operator.RewriteQuestion]: {
         ...initialRewriteQuestionValues,
         llm_id: llmId,
       },
       [Operator.Message]: initialMessageValues,
-      [Operator.KeywordExtract]: {
-        ...initialKeywordExtractValues,
-        llm_id: llmId,
-      },
       [Operator.DuckDuckGo]: initialDuckValues,
-      [Operator.Baidu]: initialBaiduValues,
       [Operator.Wikipedia]: initialWikipediaValues,
       [Operator.PubMed]: initialPubMedValues,
       [Operator.ArXiv]: initialArXivValues,
       [Operator.Google]: initialGoogleValues,
       [Operator.Bing]: initialBingValues,
       [Operator.GoogleScholar]: initialGoogleScholarValues,
-      [Operator.DeepL]: initialDeepLValues,
+      [Operator.SearXNG]: initialSearXNGValues,
       [Operator.GitHub]: initialGithubValues,
-      [Operator.BaiduFanyi]: initialBaiduFanyiValues,
-      [Operator.QWeather]: initialQWeatherValues,
       [Operator.ExeSQL]: initialExeSqlValues,
       [Operator.Switch]: initialSwitchValues,
       [Operator.WenCai]: initialWenCaiValues,
-      [Operator.AkShare]: initialAkShareValues,
       [Operator.YahooFinance]: initialYahooFinanceValues,
-      [Operator.Jin10]: initialJin10Values,
-      [Operator.Concentrator]: initialConcentratorValues,
-      [Operator.TuShare]: initialTuShareValues,
       [Operator.Note]: initialNoteValues,
       [Operator.Crawler]: initialCrawlerValues,
       [Operator.Invoke]: initialInvokeValues,
@@ -113,6 +161,27 @@ export const useInitializeOperatorParams = () => {
       [Operator.UserFillUp]: initialUserFillUpValues,
       [Operator.StringTransform]: initialStringTransformValues,
       [Operator.TavilyExtract]: initialTavilyExtractValues,
+      [Operator.Placeholder]: {},
+      [Operator.File]: {},
+      [Operator.Parser]: initialParserValues,
+      [Operator.Tokenizer]: initialTokenizerValues,
+      [Operator.Splitter]: initialSplitterValues,
+      [Operator.HierarchicalMerger]: initialHierarchicalMergerValues,
+      [Operator.Extractor]: {
+        ...initialExtractorValues,
+        llm_id: llmId,
+        sys_prompt: t('flow.prompts.system.summary'),
+        prompts: t('flow.prompts.user.summary'),
+      },
+      [Operator.DataOperations]: initialDataOperationsValues,
+      [Operator.ListOperations]: initialListOperationsValues,
+      [Operator.VariableAssigner]: initialVariableAssignerValues,
+      [Operator.VariableAggregator]: initialVariableAggregatorValues,
+      [Operator.Loop]: initialLoopValues,
+      [Operator.LoopStart]: {},
+      [Operator.ExitLoop]: {},
+      [Operator.PDFGenerator]: initialPDFGeneratorValues,
+      [Operator.ExcelProcessor]: {},
     };
   }, [llmId]);
 
@@ -122,8 +191,8 @@ export const useInitializeOperatorParams = () => {
       if (isBottomSubAgent(operatorName, position)) {
         return {
           ...initialValues,
-          description: 'This is an agent for a specific task.',
-          user_prompt: 'This is the order you need to send to the agent.',
+          description: t('flow.descriptionMessage'),
+          user_prompt: t('flow.userPromptDefaultValue'),
         };
       }
 
@@ -291,6 +360,7 @@ export function useAddNode(reactFlowInstance?: ReactFlowInstance<any, any>) {
   const { addChildEdge } = useAddChildEdge();
   const { addToolNode } = useAddToolNode();
   const { resizeIterationNode } = useResizeIterationNode();
+  const { addGroupNode } = useAddGroupNode();
   //   const [reactFlowInstance, setReactFlowInstance] =
   //     useState<ReactFlowInstance<any, any>>();
 
@@ -333,6 +403,7 @@ export function useAddNode(reactFlowInstance?: ReactFlowInstance<any, any>) {
             x: 0,
             y: 0,
           },
+          draggable: type === Operator.Placeholder ? false : undefined,
           data: {
             label: `${type}`,
             name: generateNodeNamesWithIncreasingIndex(
@@ -355,33 +426,8 @@ export function useAddNode(reactFlowInstance?: ReactFlowInstance<any, any>) {
           }
         }
 
-        if (type === Operator.Iteration) {
-          newNode.width = 500;
-          newNode.height = 250;
-          const iterationStartNode: Node<any> = {
-            id: `${Operator.IterationStart}:${humanId()}`,
-            type: 'iterationStartNode',
-            position: { x: 50, y: 100 },
-            // draggable: false,
-            data: {
-              label: Operator.IterationStart,
-              name: Operator.IterationStart,
-              form: initialIterationStartValues,
-            },
-            parentId: newNode.id,
-            extent: 'parent',
-          };
-          addNode(newNode);
-          addNode(iterationStartNode);
-          if (nodeId) {
-            addEdge({
-              source: nodeId,
-              target: newNode.id,
-              sourceHandle: NodeHandleId.Start,
-              targetHandle: NodeHandleId.End,
-            });
-          }
-          return newNode.id;
+        if ([Operator.Iteration, Operator.Loop].includes(type as Operator)) {
+          return addGroupNode(type, newNode, nodeId);
         } else if (
           type === Operator.Agent &&
           params.position === Position.Bottom
@@ -435,6 +481,7 @@ export function useAddNode(reactFlowInstance?: ReactFlowInstance<any, any>) {
     [
       addChildEdge,
       addEdge,
+      addGroupNode,
       addNode,
       addToolNode,
       calculateNewlyBackChildPosition,

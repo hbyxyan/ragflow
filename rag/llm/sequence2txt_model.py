@@ -19,12 +19,13 @@ import json
 import os
 import re
 from abc import ABC
+import tempfile
 
 import requests
 from openai import OpenAI
 from openai.lib.azure import AzureOpenAI
 
-from rag.utils import num_tokens_from_string
+from common.token_utils import num_tokens_from_string
 
 
 class Base(ABC):
@@ -58,6 +59,15 @@ class GPTSeq2txt(Base):
         self.model_name = model_name
 
 
+class StepFunSeq2txt(GPTSeq2txt):
+    _FACTORY_NAME = "StepFun"
+
+    def __init__(self, key, model_name="step-asr", lang="Chinese", base_url="https://api.stepfun.com/v1", **kwargs):
+        if not base_url:
+            base_url = "https://api.stepfun.com/v1"
+        super().__init__(key, model_name=model_name, base_url=base_url, **kwargs)
+
+
 class QWenSeq2txt(Base):
     _FACTORY_NAME = "Tongyi-Qianwen"
 
@@ -68,32 +78,80 @@ class QWenSeq2txt(Base):
         self.model_name = model_name
 
     def transcription(self, audio_path):
-        if "paraformer" in self.model_name or "sensevoice" in self.model_name:
-            return f"**ERROR**: model {self.model_name} is not suppported yet.", 0
+        import dashscope
 
-        from dashscope import MultiModalConversation
+        if audio_path.startswith("http"):
+            audio_input = audio_path
+        else:
+            audio_input = f"file://{audio_path}"
 
-        audio_path = f"file://{audio_path}"
         messages = [
             {
+                "role": "system",
+                "content": [{"text": ""}]
+            },
+            {
                 "role": "user",
-                "content": [{"audio": audio_path}],
+                "content": [{"audio": audio_input}]
             }
         ]
 
-        response = None
-        full_content = ""
-        try:
-            response = MultiModalConversation.call(model="qwen-audio-asr", messages=messages, result_format="message", stream=True)
-            for response in response:
-                try:
-                    full_content += response["output"]["choices"][0]["message"].content[0]["text"]
-                except Exception:
-                    pass
-            return full_content, num_tokens_from_string(full_content)
-        except Exception as e:
-            return "**ERROR**: " + str(e), 0
+        resp = dashscope.MultiModalConversation.call(
+            model=self.model_name,
+            messages=messages,
+            result_format="message",
+            asr_options={
+                "enable_lid": True,
+                "enable_itn": False
+            }
+        )
 
+        try:
+            text = resp["output"]["choices"][0]["message"].content[0]["text"]
+        except Exception as e:
+            text = "**ERROR**: " + str(e)
+        return text, num_tokens_from_string(text)
+
+    def stream_transcription(self, audio_path):
+        import dashscope
+
+        if audio_path.startswith("http"):
+            audio_input = audio_path
+        else:
+            audio_input = f"file://{audio_path}"
+
+        messages = [
+            {
+                "role": "system",
+                "content": [{"text": ""}]
+            },
+            {
+                "role": "user",
+                "content": [{"audio": audio_input}]
+            }
+        ]
+
+        stream = dashscope.MultiModalConversation.call(
+            model=self.model_name,
+            messages=messages,
+            result_format="message",
+            stream=True,
+            asr_options={
+                "enable_lid": True,
+                "enable_itn": False
+            }
+        )
+
+        full = ""
+        for chunk in stream:
+            try:
+                piece = chunk["output"]["choices"][0]["message"].content[0]["text"]
+                full = piece
+                yield {"event": "delta", "text": piece}
+            except Exception as e:
+                yield {"event": "error", "text": str(e)}
+
+        yield {"event": "final", "text": full}
 
 class AzureSeq2txt(Base):
     _FACTORY_NAME = "Azure-OpenAI"
@@ -218,7 +276,7 @@ class GPUStackSeq2txt(Base):
 class GiteeSeq2txt(Base):
     _FACTORY_NAME = "GiteeAI"
 
-    def __init__(self, key, model_name="whisper-1", base_url="https://ai.gitee.com/v1/"):
+    def __init__(self, key, model_name="whisper-1", base_url="https://ai.gitee.com/v1/", **kwargs):
         if not base_url:
             base_url = "https://ai.gitee.com/v1/"
         self.client = OpenAI(api_key=key, base_url=base_url)
@@ -234,3 +292,87 @@ class DeepInfraSeq2txt(Base):
 
         self.client = OpenAI(api_key=key, base_url=base_url)
         self.model_name = model_name
+
+
+class CometAPISeq2txt(Base):
+    _FACTORY_NAME = "CometAPI"
+
+    def __init__(self, key, model_name="whisper-1", base_url="https://api.cometapi.com/v1", **kwargs):
+        if not base_url:
+            base_url = "https://api.cometapi.com/v1"
+        self.client = OpenAI(api_key=key, base_url=base_url)
+        self.model_name = model_name
+
+
+class DeerAPISeq2txt(Base):
+    _FACTORY_NAME = "DeerAPI"
+
+    def __init__(self, key, model_name="whisper-1", base_url="https://api.deerapi.com/v1", **kwargs):
+        if not base_url:
+            base_url = "https://api.deerapi.com/v1"
+        self.client = OpenAI(api_key=key, base_url=base_url)
+        self.model_name = model_name
+
+
+class ZhipuSeq2txt(Base):
+    _FACTORY_NAME = "ZHIPU-AI"
+
+    def __init__(self, key, model_name="glm-asr", base_url="https://open.bigmodel.cn/api/paas/v4", **kwargs):
+        if not base_url:
+            base_url = "https://open.bigmodel.cn/api/paas/v4"
+        self.base_url = base_url
+        self.api_key = key
+        self.model_name = model_name
+        self.gen_conf = kwargs.get("gen_conf", {})
+        self.stream = kwargs.get("stream", False)
+
+    def _convert_to_wav(self, input_path):
+        ext = os.path.splitext(input_path)[1].lower()
+        if ext in [".wav", ".mp3"]:
+            return input_path
+        fd, out_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        try:
+            import ffmpeg
+            import imageio_ffmpeg as ffmpeg_exe
+            ffmpeg_path = ffmpeg_exe.get_ffmpeg_exe()
+            (
+                ffmpeg
+                .input(input_path)
+                .output(out_path, ar=16000, ac=1)
+                .overwrite_output()
+                .run(cmd=ffmpeg_path,quiet=True)
+            )
+            return out_path
+        except Exception as e:
+            raise RuntimeError(f"audio convert failed: {e}")
+
+    def transcription(self, audio_path):
+        payload = {
+            "model": self.model_name,
+            "temperature": str(self.gen_conf.get("temperature", 0.75)) or "0.75",
+            "stream": self.stream,
+        }
+
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        converted = self._convert_to_wav(audio_path)
+
+        with open(converted, "rb") as audio_file:
+            files = {"file": audio_file}
+
+            try:
+                response = requests.post(
+                    url=f"{self.base_url}/audio/transcriptions",
+                    data=payload,
+                    files=files,
+                    headers=headers,
+                )
+                body = response.json()
+                if response.status_code == 200:
+                    full_content = body["text"]
+                    return full_content, num_tokens_from_string(full_content)
+                else:
+                    error = body["error"]
+                    return f"**ERROR**: code: {error['code']}, message: {error['message']}", 0
+            except Exception as e:
+                return "**ERROR**: " + str(e), 0

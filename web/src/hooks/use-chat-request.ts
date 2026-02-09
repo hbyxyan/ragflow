@@ -1,22 +1,28 @@
+import { FileUploadProps } from '@/components/file-upload';
 import message from '@/components/ui/message';
 import { ChatSearchParams } from '@/constants/chat';
 import {
+  IClientConversation,
   IConversation,
   IDialog,
   IExternalChatInfo,
 } from '@/interfaces/database/chat';
-import { IAskRequestBody } from '@/interfaces/request/chat';
-import { IClientConversation } from '@/pages/next-chats/chat/interface';
+import {
+  IAskRequestBody,
+  IFeedbackRequestBody,
+} from '@/interfaces/request/chat';
+import i18n from '@/locales/config';
 import { useGetSharedChatSearchParams } from '@/pages/next-chats/hooks/use-send-shared-message';
 import { isConversationIdExist } from '@/pages/next-chats/utils';
 import chatService from '@/services/next-chat-service';
-import { buildMessageListWithUuid, getConversationId } from '@/utils/chat';
+import api from '@/utils/api';
+import { buildMessageListWithUuid, generateConversationId } from '@/utils/chat';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDebounce } from 'ahooks';
 import { has } from 'lodash';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useParams, useSearchParams } from 'umi';
+import { useParams, useSearchParams } from 'react-router';
 import {
   useGetPaginationWithRouter,
   useHandleSearchChange,
@@ -30,6 +36,7 @@ export const enum ChatApiAction {
   FetchDialog = 'fetchDialog',
   FetchConversationList = 'fetchConversationList',
   FetchConversation = 'fetchConversation',
+  FetchConversationManually = 'fetchConversationManually',
   UpdateConversation = 'updateConversation',
   RemoveConversation = 'removeConversation',
   DeleteMessage = 'deleteMessage',
@@ -37,6 +44,9 @@ export const enum ChatApiAction {
   FetchRelatedQuestions = 'fetchRelatedQuestions',
   UploadAndParse = 'upload_and_parse',
   FetchExternalChatInfo = 'fetchExternalChatInfo',
+  Feedback = 'feedback',
+  CreateSharedConversation = 'createSharedConversation',
+  FetchConversationSse = 'fetchConversationSSE',
 }
 
 export const useGetChatSearchParams = () => {
@@ -48,29 +58,6 @@ export const useGetChatSearchParams = () => {
       currentQueryParameters.get(ChatSearchParams.ConversationId) || '',
     isNew: currentQueryParameters.get(ChatSearchParams.isNew) || '',
   };
-};
-
-export const useClickDialogCard = () => {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_, setSearchParams] = useSearchParams();
-
-  const newQueryParameters: URLSearchParams = useMemo(() => {
-    return new URLSearchParams();
-  }, []);
-
-  const handleClickDialog = useCallback(
-    (dialogId: string) => {
-      newQueryParameters.set(ChatSearchParams.DialogId, dialogId);
-      // newQueryParameters.set(
-      //   ChatSearchParams.ConversationId,
-      //   EmptyConversationId,
-      // );
-      setSearchParams(newQueryParameters);
-    },
-    [newQueryParameters, setSearchParams],
-  );
-
-  return { handleClickDialog };
 };
 
 export const useFetchDialogList = () => {
@@ -213,28 +200,8 @@ export const useFetchDialog = () => {
 
 //#region Conversation
 
-export const useClickConversationCard = () => {
-  const [currentQueryParameters, setSearchParams] = useSearchParams();
-  const newQueryParameters: URLSearchParams = useMemo(
-    () => new URLSearchParams(currentQueryParameters.toString()),
-    [currentQueryParameters],
-  );
-
-  const handleClickConversation = useCallback(
-    (conversationId: string, isNew: string) => {
-      newQueryParameters.set(ChatSearchParams.ConversationId, conversationId);
-      newQueryParameters.set(ChatSearchParams.isNew, isNew);
-      setSearchParams(newQueryParameters);
-    },
-    [setSearchParams, newQueryParameters],
-  );
-
-  return { handleClickConversation };
-};
-
 export const useFetchConversationList = () => {
   const { id } = useParams();
-  const { handleClickConversation } = useClickConversationCard();
 
   const { searchString, handleInputChange } = useHandleSearchStrChange();
 
@@ -258,13 +225,6 @@ export const useFetchConversationList = () => {
         { params: { dialog_id: id } },
         true,
       );
-      if (data.code === 0) {
-        if (data.data.length > 0) {
-          handleClickConversation(data.data[0].id, '');
-        } else {
-          handleClickConversation('', '');
-        }
-      }
       return data?.data;
     },
   });
@@ -272,45 +232,33 @@ export const useFetchConversationList = () => {
   return { data, loading, refetch, searchString, handleInputChange };
 };
 
-export const useFetchConversation = () => {
-  const { isNew, conversationId } = useGetChatSearchParams();
-  const { sharedId } = useGetSharedChatSearchParams();
+export function useFetchConversationManually() {
   const {
     data,
-    isFetching: loading,
-    refetch,
-  } = useQuery<IClientConversation>({
-    queryKey: [ChatApiAction.FetchConversation, conversationId],
-    initialData: {} as IClientConversation,
-    // enabled: isConversationIdExist(conversationId),
-    gcTime: 0,
-    refetchOnWindowFocus: false,
-    queryFn: async () => {
-      if (
-        isNew !== 'true' &&
-        isConversationIdExist(sharedId || conversationId)
-      ) {
-        const { data } = await chatService.getConversation(
-          {
-            params: {
-              conversationId: conversationId || sharedId,
-            },
+    isPending: loading,
+    mutateAsync,
+  } = useMutation<IClientConversation, unknown, string>({
+    mutationKey: [ChatApiAction.FetchConversationManually],
+    mutationFn: async (conversationId) => {
+      const { data } = await chatService.getConversation(
+        {
+          params: {
+            conversationId,
           },
-          true,
-        );
+        },
+        true,
+      );
 
-        const conversation = data?.data ?? {};
+      const conversation = data?.data ?? {};
 
-        const messageList = buildMessageListWithUuid(conversation?.message);
+      const messageList = buildMessageListWithUuid(conversation?.message);
 
-        return { ...conversation, message: messageList };
-      }
-      return { message: [] };
+      return { ...conversation, message: messageList };
     },
   });
 
-  return { data, loading, refetch };
-};
+  return { data, loading, fetchConversationManually: mutateAsync };
+}
 
 export const useUpdateConversation = () => {
   const { t } = useTranslation();
@@ -326,7 +274,7 @@ export const useUpdateConversation = () => {
         ...params,
         conversation_id: params.conversation_id
           ? params.conversation_id
-          : getConversationId(),
+          : generateConversationId(),
       });
       if (data.code === 0) {
         queryClient.invalidateQueries({
@@ -395,9 +343,42 @@ export const useDeleteMessage = () => {
   return { data, loading, deleteMessage: mutateAsync };
 };
 
-export function useUploadAndParseFile() {
+export const useFeedback = () => {
   const { conversationId } = useGetChatSearchParams();
+
+  const {
+    data,
+    isPending: loading,
+    mutateAsync,
+  } = useMutation({
+    mutationKey: [ChatApiAction.Feedback],
+    mutationFn: async (params: IFeedbackRequestBody) => {
+      const { data } = await chatService.thumbup({
+        ...params,
+        conversationId,
+      });
+      if (data.code === 0) {
+        message.success(i18n.t(`message.operated`));
+      }
+      return data.code;
+    },
+  });
+
+  return { data, loading, feedback: mutateAsync };
+};
+
+type UploadParameters = Parameters<NonNullable<FileUploadProps['onUpload']>>;
+
+type X = {
+  file: UploadParameters[0][0];
+  options: UploadParameters[1];
+  conversationId?: string;
+};
+
+export function useUploadAndParseFile() {
+  const { conversationId: id } = useGetChatSearchParams();
   const { t } = useTranslation();
+  const controller = useRef(new AbortController());
 
   const {
     data,
@@ -405,22 +386,50 @@ export function useUploadAndParseFile() {
     mutateAsync,
   } = useMutation({
     mutationKey: [ChatApiAction.UploadAndParse],
-    mutationFn: async (file: File) => {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('conversation_id', conversationId);
+    mutationFn: async ({
+      file,
+      options: { onProgress, onSuccess, onError },
+      conversationId,
+    }: X) => {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('conversation_id', conversationId || id);
 
-      const { data } = await chatService.uploadAndParse(formData);
+        const { data } = await chatService.uploadAndParse(
+          {
+            url: api.upload_and_parse,
+            signal: controller.current.signal,
+            data: formData,
+            onUploadProgress: ({ progress }) => {
+              onProgress(file, (progress || 0) * 100 - 1);
+            },
+          },
+          true,
+        );
 
-      if (data.code === 0) {
-        message.success(t(`message.uploaded`));
+        onProgress(file, 100);
+
+        if (data.code === 0) {
+          onSuccess(file);
+          message.success(t(`message.uploaded`));
+        } else {
+          onError(file, new Error(data.message));
+        }
+
+        return data;
+      } catch (error) {
+        onError(file, error as Error);
       }
-
-      return data;
     },
   });
 
-  return { data, loading, uploadAndParseFile: mutateAsync };
+  const cancel = useCallback(() => {
+    controller.current.abort();
+    controller.current = new AbortController();
+  }, [controller]);
+
+  return { data, loading, uploadAndParseFile: mutateAsync, cancel };
 }
 
 export const useFetchExternalChatInfo = () => {
@@ -493,3 +502,47 @@ export const useFetchRelatedQuestions = () => {
   return { data, loading, fetchRelatedQuestions: mutateAsync };
 };
 //#endregion
+
+export const useCreateNextSharedConversation = () => {
+  const {
+    data,
+    isPending: loading,
+    mutateAsync,
+  } = useMutation({
+    mutationKey: [ChatApiAction.CreateSharedConversation],
+    mutationFn: async (userId?: string) => {
+      const { data } = await chatService.createExternalConversation({ userId });
+
+      return data;
+    },
+  });
+
+  return { data, loading, createSharedConversation: mutateAsync };
+};
+
+export const useFetchNextConversationSSE = () => {
+  const { isNew } = useGetChatSearchParams();
+  const { sharedId } = useGetSharedChatSearchParams();
+  const {
+    data,
+    isFetching: loading,
+    refetch,
+  } = useQuery<IClientConversation>({
+    queryKey: [ChatApiAction.FetchConversationSse, sharedId],
+    initialData: {} as IClientConversation,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      if (isNew !== 'true' && isConversationIdExist(sharedId || '')) {
+        if (!sharedId) return {};
+        const { data } = await chatService.getConversationSSE(sharedId);
+        const conversation = data?.data ?? {};
+        const messageList = buildMessageListWithUuid(conversation?.message);
+        return { ...conversation, message: messageList };
+      }
+      return { message: [] };
+    },
+  });
+
+  return { data, loading, refetch };
+};

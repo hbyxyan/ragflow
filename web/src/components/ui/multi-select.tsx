@@ -29,6 +29,8 @@ import {
 } from '@/components/ui/popover';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import { t } from 'i18next';
+import { isEmpty } from 'lodash';
 
 export type MultiSelectOptionType = {
   label: React.ReactNode;
@@ -122,7 +124,8 @@ const multiSelectVariants = cva(
  * Props for MultiSelect component
  */
 interface MultiSelectProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+  extends
+    React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof multiSelectVariants> {
   /**
    * An array of option objects to be displayed in the multi-select component.
@@ -192,7 +195,7 @@ export const MultiSelect = React.forwardRef<
       onValueChange,
       variant,
       defaultValue = [],
-      placeholder = 'Select options',
+      placeholder = t('common.selectPlaceholder'),
       animation = 0,
       maxCount = 3,
       modalPopover = false,
@@ -209,8 +212,20 @@ export const MultiSelect = React.forwardRef<
     const [isAnimating, setIsAnimating] = React.useState(false);
 
     React.useEffect(() => {
-      setSelectedValues(defaultValue);
-    }, [defaultValue]);
+      if (isEmpty(selectedValues) && !isEmpty(props.value)) {
+        setSelectedValues(props.value as string[]);
+      }
+    }, [props.value, selectedValues]);
+
+    React.useEffect(() => {
+      if (
+        isEmpty(selectedValues) &&
+        isEmpty(props.value) &&
+        !isEmpty(defaultValue)
+      ) {
+        setSelectedValues(defaultValue);
+      }
+    }, [defaultValue, props.value, selectedValues]);
 
     const flatOptions = React.useMemo(() => {
       return options.flatMap((option) =>
@@ -275,12 +290,12 @@ export const MultiSelect = React.forwardRef<
             {...props}
             onClick={handleTogglePopover}
             className={cn(
-              'flex w-full p-1 rounded-md border min-h-10 h-auto items-center justify-between bg-inherit hover:bg-inherit [&_svg]:pointer-events-auto',
+              'flex w-full p-1 rounded-md border border-border-button min-h-10 h-auto placeholder:text-text-disabled items-center justify-between bg-bg-input focus-visible:bg-bg-input hover:bg-bg-input [&_svg]:pointer-events-auto',
               className,
             )}
           >
             {selectedValues.length > 0 ? (
-              <div className="flex justify-between items-center w-full">
+              <div className="flex justify-between items-center w-full group">
                 <div className="flex flex-wrap items-center">
                   {selectedValues?.slice(0, maxCount)?.map((value) => {
                     const option = flatOptions.find((o) => o.value === value);
@@ -291,15 +306,18 @@ export const MultiSelect = React.forwardRef<
                         variant="secondary"
                         className={cn(
                           isAnimating ? 'animate-bounce' : '',
+                          'px-1',
                           multiSelectVariants({ variant }),
                         )}
                         style={{ animationDuration: `${animation}s` }}
                       >
-                        <div className="flex items-center gap-1">
+                        <div className="flex justify-between items-center gap-1">
                           {IconComponent && (
                             <IconComponent className="h-4 w-4" />
                           )}
-                          <div>{option?.label}</div>
+                          <div className="max-w-28 text-ellipsis overflow-hidden">
+                            {option?.label}
+                          </div>
                           <XCircle
                             className="h-4 w-4 cursor-pointer"
                             onClick={(event) => {
@@ -331,9 +349,9 @@ export const MultiSelect = React.forwardRef<
                     </Badge>
                   )}
                 </div>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between ">
                   <XIcon
-                    className="h-4 mx-2 cursor-pointer text-muted-foreground"
+                    className="h-4 mx-2 cursor-pointer text-text-secondary hidden group-hover:block"
                     onClick={(event) => {
                       event.stopPropagation();
                       handleClear();
@@ -341,17 +359,17 @@ export const MultiSelect = React.forwardRef<
                   />
                   <Separator
                     orientation="vertical"
-                    className="flex min-h-6 h-full"
+                    className="min-h-6 h-full hidden group-hover:flex"
                   />
-                  <ChevronDown className="h-4 mx-2 cursor-pointer text-muted-foreground" />
+                  <ChevronDown className="h-4 mx-2 cursor-pointer text-text-secondary" />
                 </div>
               </div>
             ) : (
               <div className="flex items-center justify-between w-full mx-auto">
-                <span className="text-sm text-muted-foreground mx-3">
+                <span className="text-sm text-text-secondary mx-3">
                   {placeholder}
                 </span>
-                <ChevronDown className="h-4 cursor-pointer text-muted-foreground mx-2" />
+                <ChevronDown className="h-4 cursor-pointer text-text-secondary mx-2" />
               </div>
             )}
           </Button>
@@ -361,15 +379,17 @@ export const MultiSelect = React.forwardRef<
           align="start"
           onEscapeKeyDown={() => setIsPopoverOpen(false)}
         >
-          <Command>
-            <CommandInput
-              placeholder="Search..."
-              onKeyDown={handleInputKeyDown}
-            />
-            <CommandList>
+          <Command className="p-5 pb-8">
+            {options && options.length > 0 && (
+              <CommandInput
+                placeholder={t('common.search') + '...'}
+                onKeyDown={handleInputKeyDown}
+              />
+            )}
+            <CommandList className="mt-2">
               <CommandEmpty>No results found.</CommandEmpty>
               <CommandGroup>
-                {showSelectAll && (
+                {showSelectAll && options && options.length > 0 && (
                   <CommandItem
                     key="all"
                     onSelect={toggleAll}
@@ -385,7 +405,7 @@ export const MultiSelect = React.forwardRef<
                     >
                       <CheckIcon className="h-4 w-4" />
                     </div>
-                    <span>(Select All)</span>
+                    <span>({t('common.selectAll')})</span>
                   </CommandItem>
                 )}
                 {!options.some((x) => 'options' in x) &&
@@ -420,9 +440,9 @@ export const MultiSelect = React.forwardRef<
                     })}
                   </CommandGroup>
                 ))}
-              <CommandSeparator />
               <CommandGroup>
-                <div className="flex items-center justify-between">
+                <div className=" absolute bottom-1 left-1 right-1 flex items-center justify-between mx-5 bg-bg-base border-t border-border-button">
+                  <CommandSeparator />
                   {selectedValues.length > 0 && (
                     <>
                       <CommandItem
@@ -437,12 +457,14 @@ export const MultiSelect = React.forwardRef<
                       />
                     </>
                   )}
-                  <CommandItem
-                    onSelect={() => setIsPopoverOpen(false)}
-                    className="flex-1 justify-center cursor-pointer max-w-full"
-                  >
-                    Close
-                  </CommandItem>
+                  {options && options.length > 0 && (
+                    <CommandItem
+                      onSelect={() => setIsPopoverOpen(false)}
+                      className="flex-1 justify-center cursor-pointer max-w-full"
+                    >
+                      {t('common.close')}
+                    </CommandItem>
+                  )}
                 </div>
               </CommandGroup>
             </CommandList>

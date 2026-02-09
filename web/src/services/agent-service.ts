@@ -1,4 +1,8 @@
-import { IAgentLogsRequest } from '@/interfaces/database/agent';
+import {
+  IAgentLogsRequest,
+  IPipeLineListRequest,
+} from '@/interfaces/database/agent';
+import { IAgentWebhookTraceRequest } from '@/interfaces/request/agent';
 import api from '@/utils/api';
 import { registerNextServer } from '@/utils/register-server';
 import request from '@/utils/request';
@@ -14,7 +18,6 @@ const {
   testDbConnect,
   getInputElements,
   debug,
-  listCanvasTeam,
   settingCanvas,
   uploadCanvasFile,
   trace,
@@ -25,6 +28,9 @@ const {
   fetchAgentAvatar,
   fetchAgentLogs,
   fetchExternalAgentInputs,
+  prompt,
+  cancelDataflow,
+  cancelCanvas,
 } = api;
 
 const methods = {
@@ -80,10 +86,6 @@ const methods = {
     url: debug,
     method: 'post',
   },
-  listCanvasTeam: {
-    url: listCanvasTeam,
-    method: 'get',
-  },
   settingCanvas: {
     url: settingCanvas,
     method: 'post',
@@ -112,6 +114,22 @@ const methods = {
     url: fetchExternalAgentInputs,
     method: 'get',
   },
+  fetchPrompt: {
+    url: prompt,
+    method: 'get',
+  },
+  cancelDataflow: {
+    url: cancelDataflow,
+    method: 'put',
+  },
+  cancelCanvas: {
+    url: cancelCanvas,
+    method: 'put',
+  },
+  createAgentSession: {
+    url: fetchAgentLogs,
+    method: 'put',
+  },
 } as const;
 
 const agentService = registerNextServer<keyof typeof methods>(methods);
@@ -124,6 +142,29 @@ export const fetchAgentLogsByCanvasId = (
   params: IAgentLogsRequest,
 ) => {
   return request.get(methods.fetchAgentLogs.url(canvasId), { params: params });
+};
+
+export const fetchAgentLogsById = (canvasId: string, sessionId: string) => {
+  return request.get(api.fetchAgentLogsById(canvasId, sessionId));
+};
+
+export const fetchPipeLineList = (params: IPipeLineListRequest) => {
+  return request.get(api.listCanvas, { params: params });
+};
+
+export const fetchWebhookTrace = (
+  id: string,
+  params: IAgentWebhookTraceRequest,
+) => {
+  return request.get(api.fetchWebhookTrace(id), { params: params });
+};
+
+export function createAgentSession({ id, name }: { id: string; name: string }) {
+  return request.put(api.fetchAgentLogs(id), { data: { name } });
+}
+
+export const deleteAgentSession = (canvasId: string, sessionId: string) => {
+  return request.delete(api.fetchAgentLogsById(canvasId, sessionId));
 };
 
 export default agentService;
